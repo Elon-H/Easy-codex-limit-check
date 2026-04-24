@@ -1,0 +1,27 @@
+{
+  "provider": "codex_wham",
+  "five_hour_window_hours": 5,
+  "week_window_days": 7,
+  "week_start_weekday": 1,
+  "state_file_ttl_seconds": 180,
+  "five_hour_limit_usd": 0,
+  "week_limit_usd": 0,
+  "defaults": {
+    "five_hour_limit_usd": 10.0,
+    "week_limit_usd": 100.0
+  },
+  "openai": {
+    "api_base": "https://api.openai.com",
+    "api_key_env": "OPENAI_API_KEY",
+    "organization_id_env": "OPENAI_ORGANIZATION_ID",
+    "timeout_seconds": 20,
+    "keychain_service": "com.easy-codex-limit-check.openai",
+    "keychain_account": "api_key"
+  },
+  "codex": {
+    "api_base": "https://chatgpt.com/backend-api",
+    "usage_path": "/wham/usage",
+    "auth_file": "~/.codex/auth.json",
+    "timeout_seconds": 20
+  }
+}

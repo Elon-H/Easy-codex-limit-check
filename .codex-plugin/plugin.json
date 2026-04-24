@@ -1,0 +1,42 @@
+{
+  "name": "easy-codex-limit-check",
+  "version": "0.1.0",
+  "description": "Show Codex Pro 5h and weekly rate-limit remaining percentages in the macOS menu bar using your local Codex login.",
+  "author": {
+    "name": "huangyilong",
+    "email": ""
+  },
+  "homepage": "https://github.com/huangyilong/easy-codex-limit-check",
+  "repository": "https://github.com/huangyilong/easy-codex-limit-check",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "quota",
+    "openai",
+    "menu-bar",
+    "macos"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Easy Codex Limit Check",
+    "shortDescription": "Live Codex Pro 5h and weekly limit monitor for your Mac menu bar.",
+    "longDescription": "A local Codex plugin and companion macOS menu-bar app that read Codex/ChatGPT usage from the signed-in Codex session, write normalized rate-limit state to a local file, and display 5h plus weekly remaining percentages with reset times.",
+    "developerName": "huangyilong",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write",
+      "Interactive"
+    ],
+        "websiteURL": "https://github.com/huangyilong/easy-codex-limit-check",
+        "privacyPolicyURL": "https://github.com/huangyilong/easy-codex-limit-check#privacy",
+        "termsOfServiceURL": "https://github.com/huangyilong/easy-codex-limit-check#license",
+    "defaultPrompt": [
+      "Show current 5h/week quota status",
+      "Refresh quota data now",
+      "Show launchd install instructions"
+    ],
+    "brandColor": "#2563EB",
+    "screenshots": []
+  }
+}

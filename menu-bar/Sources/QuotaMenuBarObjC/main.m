@@ -1,0 +1,423 @@
+#import <AppKit/AppKit.h>
+#import <Foundation/Foundation.h>
+
+static NSString *StringValue(id value) {
+    return [value isKindOfClass:[NSString class]] ? value : nil;
+}
+
+static NSNumber *NumberValue(id value) {
+    return [value isKindOfClass:[NSNumber class]] ? value : nil;
+}
+
+static NSDictionary *DictionaryValue(id value) {
+    return [value isKindOfClass:[NSDictionary class]] ? value : nil;
+}
+
+static NSArray *ArrayValue(id value) {
+    return [value isKindOfClass:[NSArray class]] ? value : nil;
+}
+
+static NSString *EnvironmentValue(NSString *key) {
+    NSString *value = [NSProcessInfo processInfo].environment[key];
+    return value.length > 0 ? value : nil;
+}
+
+@interface AppDelegate : NSObject <NSApplicationDelegate>
+@property(nonatomic, strong) NSStatusItem *statusItem;
+@property(nonatomic, strong) NSTimer *refreshTimer;
+@property(nonatomic, strong) NSURL *stateURL;
+@property(nonatomic, strong) NSDateFormatter *timeFormatter;
+@property(nonatomic, strong) NSDateFormatter *dateOnlyFormatter;
+@property(nonatomic, strong) NSDateFormatter *detailDateFormatter;
+@property(nonatomic, strong) NSISO8601DateFormatter *isoFormatter;
+@property(nonatomic, copy) NSString *pluginRoot;
+@property(nonatomic, copy) NSString *fetchScript;
+@end
+
+@implementation AppDelegate
+
+- (instancetype)init {
+    self = [super init];
+    if (!self) {
+        return nil;
+    }
+
+    NSString *statePath = EnvironmentValue(@"CODEX_QUOTA_STATE_PATH");
+    if (!statePath) {
+        statePath = [@"~/Library/Caches/com.easy-codex-limit-check/state.json" stringByExpandingTildeInPath];
+    }
+    _stateURL = [NSURL fileURLWithPath:statePath isDirectory:NO];
+
+    NSString *pluginPath = EnvironmentValue(@"CODEX_QUOTA_PLUGIN_PATH");
+    if (!pluginPath) {
+        pluginPath = [NSHomeDirectory() stringByAppendingPathComponent:@"easy-codex-limit-check"];
+    }
+    _pluginRoot = [pluginPath copy];
+
+    NSString *fetchScript = EnvironmentValue(@"CODEX_QUOTA_FETCH_SCRIPT");
+    if (!fetchScript) {
+        fetchScript = [_pluginRoot stringByAppendingPathComponent:@"menu-bar/scripts/run_fetch_quota.sh"];
+    }
+    _fetchScript = [fetchScript copy];
+
+    _timeFormatter = [[NSDateFormatter alloc] init];
+    _timeFormatter.dateFormat = @"HH:mm";
+    _timeFormatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+
+    _dateOnlyFormatter = [[NSDateFormatter alloc] init];
+    _dateOnlyFormatter.dateFormat = @"MMM d";
+    _dateOnlyFormatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+
+    _detailDateFormatter = [[NSDateFormatter alloc] init];
+    _detailDateFormatter.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+    _detailDateFormatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+
+    _isoFormatter = [[NSISO8601DateFormatter alloc] init];
+    _isoFormatter.formatOptions = NSISO8601DateFormatWithInternetDateTime;
+
+    return self;
+}
+
+- (void)applicationDidFinishLaunching:(NSNotification *)notification {
+    (void)notification;
+    self.statusItem = [NSStatusBar.systemStatusBar statusItemWithLength:NSVariableStatusItemLength];
+    self.statusItem.button.title = @"quota...";
+    self.statusItem.button.toolTip = @"Easy Codex Limit Check";
+
+    [self updateMenu];
+    self.refreshTimer = [NSTimer scheduledTimerWithTimeInterval:30.0
+                                                        target:self
+                                                      selector:@selector(updateMenu)
+                                                      userInfo:nil
+                                                       repeats:YES];
+}
+
+- (void)applicationWillTerminate:(NSNotification *)notification {
+    (void)notification;
+    [self.refreshTimer invalidate];
+}
+
+- (NSDate *)dateFromString:(NSString *)value {
+    if (value.length == 0) {
+        return nil;
+    }
+
+    NSDate *date = [self.isoFormatter dateFromString:value];
+    if (date) {
+        return date;
+    }
+
+    NSArray *formats = @[
+        @"yyyy-MM-dd'T'HH:mm:ss'Z'",
+        @"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+        @"yyyy-MM-dd HH:mm:ss"
+    ];
+    NSDateFormatter *fallback = [[NSDateFormatter alloc] init];
+    fallback.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    fallback.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+    for (NSString *format in formats) {
+        fallback.dateFormat = format;
+        date = [fallback dateFromString:value];
+        if (date) {
+            return date;
+        }
+    }
+    return nil;
+}
+
+- (NSString *)shortTime:(NSString *)value {
+    NSDate *date = [self dateFromString:value];
+    return date ? [self.timeFormatter stringFromDate:date] : @"--:--";
+}
+
+- (NSString *)shortDate:(NSString *)value {
+    NSDate *date = [self dateFromString:value];
+    return date ? [self.dateOnlyFormatter stringFromDate:date] : @"--";
+}
+
+- (NSString *)detailTime:(NSString *)value {
+    NSDate *date = [self dateFromString:value];
+    return date ? [self.detailDateFormatter stringFromDate:date] : @"--";
+}
+
+- (NSString *)percentString:(NSNumber *)value {
+    if (!value) {
+        return @"--";
+    }
+    return [NSString stringWithFormat:@"%.0f%%", value.doubleValue];
+}
+
+- (NSNumber *)remainingPercentForWindow:(NSDictionary *)window {
+    NSNumber *remaining = NumberValue(window[@"remaining_percent"]);
+    if (remaining) {
+        return remaining;
+    }
+
+    NSNumber *legacyRemaining = NumberValue(window[@"remaining"]);
+    if (legacyRemaining) {
+        return legacyRemaining;
+    }
+
+    NSNumber *used = NumberValue(window[@"used_percent"]);
+    if (used) {
+        double value = 100.0 - used.doubleValue;
+        if (value < 0.0) {
+            value = 0.0;
+        }
+        if (value > 100.0) {
+            value = 100.0;
+        }
+        return @(value);
+    }
+
+    return nil;
+}
+
+- (NSString *)resetAtForWindow:(NSDictionary *)window {
+    return StringValue(window[@"reset_at"]);
+}
+
+- (NSDictionary *)primaryGroupFromState:(NSDictionary *)state {
+    NSArray *groups = ArrayValue(state[@"rate_limits"]);
+    if (groups.count > 0) {
+        return DictionaryValue(groups.firstObject);
+    }
+    return nil;
+}
+
+- (NSString *)titleFromState:(NSDictionary *)state stale:(BOOL)stale {
+    NSDictionary *primary = [self primaryGroupFromState:state];
+    NSDictionary *fiveH = DictionaryValue(primary[@"five_h"]) ?: DictionaryValue(state[@"five_h"]);
+    NSDictionary *week = DictionaryValue(primary[@"week"]) ?: DictionaryValue(state[@"week"]);
+
+    NSString *fiveText = [self percentString:[self remainingPercentForWindow:fiveH]];
+    NSString *weekText = [self percentString:[self remainingPercentForWindow:week]];
+    NSString *fiveReset = [self shortTime:[self resetAtForWindow:fiveH]];
+    NSString *weekReset = [self shortDate:[self resetAtForWindow:week]];
+
+    if (!fiveH && !week) {
+        return stale ? @"quota stale" : @"quota --";
+    }
+
+    NSString *title = [NSString stringWithFormat:@"5h %@ %@ | W %@ %@", fiveText, fiveReset, weekText, weekReset];
+    return stale ? [@"! " stringByAppendingString:title] : title;
+}
+
+- (NSDictionary *)loadState:(NSError **)error {
+    NSData *data = [NSData dataWithContentsOfURL:self.stateURL options:0 error:error];
+    if (!data) {
+        return nil;
+    }
+
+    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:error];
+    return DictionaryValue(json);
+}
+
+- (NSDate *)lastRefreshDateFromState:(NSDictionary *)state {
+    NSString *sourceRefresh = StringValue(DictionaryValue(state[@"source"])[@"last_refresh_at"]);
+    NSDate *date = [self dateFromString:sourceRefresh];
+    if (date) {
+        return date;
+    }
+
+    NSString *stateRefresh = StringValue(state[@"last_refresh_at"]);
+    date = [self dateFromString:stateRefresh];
+    if (date) {
+        return date;
+    }
+
+    NSDictionary *primary = [self primaryGroupFromState:state];
+    NSString *groupRefresh = StringValue(primary[@"updated_at"]);
+    return [self dateFromString:groupRefresh];
+}
+
+- (BOOL)isStateStale:(NSDictionary *)state {
+    NSDate *lastRefresh = [self lastRefreshDateFromState:state];
+    if (!lastRefresh) {
+        return YES;
+    }
+
+    NSNumber *ttl = NumberValue(state[@"state_file_ttl_seconds"]);
+    NSTimeInterval ttlSeconds = ttl ? ttl.doubleValue : 180.0;
+    return [[NSDate date] timeIntervalSinceDate:lastRefresh] > ttlSeconds;
+}
+
+- (void)addDisabledItemToMenu:(NSMenu *)menu title:(NSString *)title {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
+    item.enabled = NO;
+    [menu addItem:item];
+}
+
+- (void)addGroup:(NSDictionary *)group toMenu:(NSMenu *)menu {
+    NSString *name = StringValue(group[@"name"]) ?: @"Rate limit";
+    [self addDisabledItemToMenu:menu title:name];
+
+    NSDictionary *fiveH = DictionaryValue(group[@"five_h"]);
+    if (fiveH) {
+        NSString *text = [NSString stringWithFormat:@"  5h: %@  reset %@",
+                          [self percentString:[self remainingPercentForWindow:fiveH]],
+                          [self detailTime:[self resetAtForWindow:fiveH]]];
+        [self addDisabledItemToMenu:menu title:text];
+    }
+
+    NSDictionary *week = DictionaryValue(group[@"week"]);
+    if (week) {
+        NSString *text = [NSString stringWithFormat:@"  Weekly: %@  reset %@",
+                          [self percentString:[self remainingPercentForWindow:week]],
+                          [self shortDate:[self resetAtForWindow:week]]];
+        [self addDisabledItemToMenu:menu title:text];
+    }
+}
+
+- (NSString *)errorMessageFromState:(NSDictionary *)state {
+    NSDictionary *error = DictionaryValue(state[@"error"]);
+    return StringValue(error[@"message"]);
+}
+
+- (NSMenu *)menuForState:(NSDictionary *)state loadError:(NSError *)loadError {
+    BOOL stale = state ? [self isStateStale:state] : YES;
+    NSString *title = state ? [self titleFromState:state stale:stale] : @"quota error";
+    self.statusItem.button.title = title;
+
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Codex Quota"];
+    [self addDisabledItemToMenu:menu title:title];
+    [menu addItem:NSMenuItem.separatorItem];
+
+    if (state) {
+        NSArray *groups = ArrayValue(state[@"rate_limits"]);
+        if (groups.count > 0) {
+            for (id rawGroup in groups) {
+                NSDictionary *group = DictionaryValue(rawGroup);
+                if (!group) {
+                    continue;
+                }
+                [self addGroup:group toMenu:menu];
+                [menu addItem:NSMenuItem.separatorItem];
+            }
+        } else {
+            NSDictionary *legacy = @{@"name": @"Rate limits remaining",
+                                     @"five_h": DictionaryValue(state[@"five_h"]) ?: @{},
+                                     @"week": DictionaryValue(state[@"week"]) ?: @{}};
+            [self addGroup:legacy toMenu:menu];
+            [menu addItem:NSMenuItem.separatorItem];
+        }
+
+        NSDate *lastRefresh = [self lastRefreshDateFromState:state];
+        if (lastRefresh) {
+            [self addDisabledItemToMenu:menu
+                                  title:[NSString stringWithFormat:@"Updated: %@",
+                                         [self.detailDateFormatter stringFromDate:lastRefresh]]];
+        }
+        if (stale) {
+            [self addDisabledItemToMenu:menu title:@"Status: stale"];
+        }
+
+        NSString *stateError = [self errorMessageFromState:state];
+        if (stateError.length > 0) {
+            [self addDisabledItemToMenu:menu title:[@"Error: " stringByAppendingString:stateError]];
+        }
+    } else {
+        NSString *message = loadError.localizedDescription ?: @"state file not found";
+        [self addDisabledItemToMenu:menu title:[@"Error: " stringByAppendingString:message]];
+        [self addDisabledItemToMenu:menu title:self.stateURL.path];
+    }
+
+    [menu addItem:NSMenuItem.separatorItem];
+
+    NSMenuItem *fetchItem = [[NSMenuItem alloc] initWithTitle:@"Fetch Now" action:@selector(fetchNow:) keyEquivalent:@"f"];
+    fetchItem.target = self;
+    [menu addItem:fetchItem];
+
+    NSMenuItem *refreshItem = [[NSMenuItem alloc] initWithTitle:@"Reload State" action:@selector(updateMenu) keyEquivalent:@"r"];
+    refreshItem.target = self;
+    [menu addItem:refreshItem];
+
+    [menu addItem:NSMenuItem.separatorItem];
+
+    NSMenuItem *readmeItem = [[NSMenuItem alloc] initWithTitle:@"Open README" action:@selector(openReadme:) keyEquivalent:@"o"];
+    readmeItem.target = self;
+    [menu addItem:readmeItem];
+
+    NSMenuItem *stateItem = [[NSMenuItem alloc] initWithTitle:@"Open State File" action:@selector(openStateFile:) keyEquivalent:@"s"];
+    stateItem.target = self;
+    [menu addItem:stateItem];
+
+    [menu addItem:NSMenuItem.separatorItem];
+
+    NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit" action:@selector(quit:) keyEquivalent:@"q"];
+    quitItem.target = self;
+    [menu addItem:quitItem];
+
+    return menu;
+}
+
+- (void)updateMenu {
+    NSError *error = nil;
+    NSDictionary *state = [self loadState:&error];
+    self.statusItem.menu = [self menuForState:state loadError:error];
+}
+
+- (void)fetchNow:(id)sender {
+    (void)sender;
+    NSString *script = self.fetchScript;
+    if (![NSFileManager.defaultManager isExecutableFileAtPath:script]) {
+        [self updateMenu];
+        return;
+    }
+
+    NSTask *task = [[NSTask alloc] init];
+    task.launchPath = @"/bin/bash";
+    task.arguments = @[script];
+
+    NSMutableDictionary *environment = [NSMutableDictionary dictionaryWithDictionary:NSProcessInfo.processInfo.environment];
+    environment[@"CODEX_QUOTA_STATE_PATH"] = self.stateURL.path;
+    environment[@"CODEX_QUOTA_PLUGIN_PATH"] = self.pluginRoot;
+    task.environment = environment;
+
+    __weak typeof(self) weakSelf = self;
+    task.terminationHandler = ^(NSTask *finishedTask) {
+        (void)finishedTask;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf updateMenu];
+        });
+    };
+
+    @try {
+        [task launch];
+    } @catch (NSException *exception) {
+        (void)exception;
+        [self updateMenu];
+    }
+}
+
+- (void)openReadme:(id)sender {
+    (void)sender;
+    NSString *readme = [self.pluginRoot stringByAppendingPathComponent:@"README.md"];
+    [NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:readme]];
+}
+
+- (void)openStateFile:(id)sender {
+    (void)sender;
+    [NSWorkspace.sharedWorkspace openURL:self.stateURL];
+}
+
+- (void)quit:(id)sender {
+    (void)sender;
+    [NSApplication.sharedApplication terminate:nil];
+}
+
+@end
+
+int main(int argc, const char *argv[]) {
+    (void)argc;
+    (void)argv;
+
+    @autoreleasepool {
+        NSApplication *application = NSApplication.sharedApplication;
+        [application setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        AppDelegate *delegate = [[AppDelegate alloc] init];
+        application.delegate = delegate;
+        [application run];
+    }
+    return 0;
+}
