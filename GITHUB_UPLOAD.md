@@ -1,9 +1,9 @@
 # GitHub Upload Checklist
 
-Recommended repository name:
+Repository:
 
 ```text
-easy-codex-limit-check
+https://github.com/Elon-H/Easy-codex-limit-check
 ```
 
 Recommended GitHub description:

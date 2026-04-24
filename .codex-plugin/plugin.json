@@ -6,8 +6,8 @@
     "name": "huangyilong",
     "email": ""
   },
-  "homepage": "https://github.com/huangyilong/easy-codex-limit-check",
-  "repository": "https://github.com/huangyilong/easy-codex-limit-check",
+  "homepage": "https://github.com/Elon-H/Easy-codex-limit-check",
+  "repository": "https://github.com/Elon-H/Easy-codex-limit-check",
   "license": "MIT",
   "keywords": [
     "codex",
@@ -28,9 +28,9 @@
       "Write",
       "Interactive"
     ],
-        "websiteURL": "https://github.com/huangyilong/easy-codex-limit-check",
-        "privacyPolicyURL": "https://github.com/huangyilong/easy-codex-limit-check#privacy",
-        "termsOfServiceURL": "https://github.com/huangyilong/easy-codex-limit-check#license",
+        "websiteURL": "https://github.com/Elon-H/Easy-codex-limit-check",
+        "privacyPolicyURL": "https://github.com/Elon-H/Easy-codex-limit-check#privacy",
+        "termsOfServiceURL": "https://github.com/Elon-H/Easy-codex-limit-check#license",
     "defaultPrompt": [
       "Show current 5h/week quota status",
       "Refresh quota data now",
