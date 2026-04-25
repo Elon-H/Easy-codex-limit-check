@@ -4,6 +4,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import select
+import shlex
+import shutil
 import subprocess
 import ssl
 import urllib.error
@@ -201,7 +204,7 @@ def compute_week(now: datetime, weekday_start: int) -> tuple[datetime, datetime]
 
 def parse_config(path: Optional[Path]) -> Dict[str, Any]:
     cfg = {
-        "provider": "openai",
+        "provider": "app_server",
         "five_hour_window_hours": 5,
         "week_window_days": 7,
         "week_start_weekday": 1,
@@ -225,6 +228,11 @@ def parse_config(path: Optional[Path]) -> Dict[str, Any]:
             "usage_path": "/wham/usage",
             "auth_file": "~/.codex/auth.json",
             "timeout_seconds": 20,
+        },
+        "app_server": {
+            "command": "codex",
+            "timeout_seconds": 20,
+            "fallback_to_wham": True,
         },
         "manual": {
             "unit": "messages",
@@ -336,6 +344,114 @@ def fetch_codex_usage(cfg: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise RuntimeError("Codex usage response was not a JSON object")
     return payload
+
+
+def _app_server_command(cfg: Dict[str, Any]) -> list[str]:
+    app_cfg = cfg.get("app_server", {})
+    if not isinstance(app_cfg, dict):
+        app_cfg = {}
+
+    raw_command = app_cfg.get("command", "codex")
+    if isinstance(raw_command, list):
+        command = [str(part) for part in raw_command if str(part).strip()]
+    else:
+        command = shlex.split(str(raw_command or "codex"))
+    if not command:
+        command = ["codex"]
+
+    if command[0] == "codex":
+        resolved = shutil.which("codex")
+        bundled = "/Applications/Codex.app/Contents/Resources/codex"
+        if resolved:
+            command[0] = resolved
+        elif Path(bundled).exists():
+            command[0] = bundled
+
+    return command + ["app-server", "--listen", "stdio://"]
+
+
+def _send_jsonl(proc: subprocess.Popen, payload: Dict[str, Any]) -> None:
+    if proc.stdin is None:
+        raise RuntimeError("Codex app-server stdin is unavailable")
+    proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    proc.stdin.flush()
+
+
+def fetch_app_server_rate_limits(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    app_cfg = cfg.get("app_server", {})
+    if not isinstance(app_cfg, dict):
+        app_cfg = {}
+    timeout = int(app_cfg.get("timeout_seconds", 20))
+    command = _app_server_command(cfg)
+
+    try:
+        proc = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"Codex app-server command was not found: {command[0]}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Failed to start Codex app-server: {exc}") from exc
+
+    try:
+        _send_jsonl(
+            proc,
+            {
+                "method": "initialize",
+                "id": 0,
+                "params": {
+                    "clientInfo": {
+                        "name": "easy-codex-limit-check",
+                        "title": "Easy Codex Limit Check",
+                        "version": "0.1.0",
+                    }
+                },
+            },
+        )
+        _send_jsonl(proc, {"method": "initialized", "params": {}})
+        _send_jsonl(proc, {"method": "account/rateLimits/read", "id": 1, "params": None})
+
+        deadline = datetime.utcnow() + timedelta(seconds=timeout)
+        while datetime.utcnow() < deadline:
+            if proc.poll() is not None:
+                stderr = proc.stderr.read() if proc.stderr else ""
+                raise RuntimeError(f"Codex app-server exited early with code {proc.returncode}: {stderr.strip()}")
+
+            remaining = max((deadline - datetime.utcnow()).total_seconds(), 0.0)
+            ready, _, _ = select.select([proc.stdout], [], [], min(0.25, remaining))
+            if not ready:
+                continue
+
+            line = proc.stdout.readline() if proc.stdout else ""
+            if not line:
+                continue
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(message, dict) or message.get("id") != 1:
+                continue
+            if isinstance(message.get("error"), dict):
+                err = message["error"]
+                raise RuntimeError(err.get("message") or json.dumps(err, ensure_ascii=False))
+            result = message.get("result")
+            if not isinstance(result, dict):
+                raise RuntimeError("Codex app-server rate limit response had no result object")
+            return result
+
+        raise RuntimeError("Timed out waiting for Codex app-server rate limit response")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            proc.communicate(timeout=2)
+        except Exception:
+            pass
 
 
 def fetch_openai_subscription(cfg: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, float]:
@@ -469,6 +585,115 @@ def _rate_limit_group_from_codex(
         "week": _rate_limit_window_from_codex(rate_limit.get("secondary_window"), week_end, now, "Weekly"),
         "updated_at": to_iso8601(now),
     }
+
+
+def _rate_limit_window_from_app_server(window: Any, fallback_reset_at: datetime, now: datetime, label: str) -> Dict[str, Any]:
+    if not isinstance(window, dict):
+        window = {}
+    used_percent = _clamp_percent(safe_float(window.get("usedPercent")))
+    remaining_percent = None if used_percent is None else _percent_display_value(100 - used_percent)
+    reset_at = _epoch_to_datetime(window.get("resetsAt")) or fallback_reset_at
+    window_minutes = safe_float(window.get("windowDurationMins"))
+    window_seconds = int(window_minutes * 60) if window_minutes is not None else None
+    reset_after_seconds = max(0, int((reset_at - now).total_seconds())) if reset_at else None
+    return {
+        "label": label,
+        "used_percent": used_percent,
+        "remaining_percent": remaining_percent,
+        "reset_at": to_iso8601(reset_at),
+        "reset_after_seconds": reset_after_seconds,
+        "window_seconds": window_seconds,
+        "updated_at": to_iso8601(now),
+    }
+
+
+def _rate_limit_group_from_app_server(
+    name: str,
+    payload: Any,
+    now: datetime,
+    five_end: datetime,
+    week_end: datetime,
+) -> Dict[str, Any]:
+    rate_limit = payload if isinstance(payload, dict) else {}
+    limit_reached = rate_limit.get("rateLimitReachedType") is not None
+    return {
+        "name": name,
+        "metered_feature": rate_limit.get("limitId") if isinstance(rate_limit.get("limitId"), str) else None,
+        "allowed": not limit_reached,
+        "limit_reached": limit_reached,
+        "five_h": _rate_limit_window_from_app_server(rate_limit.get("primary"), five_end, now, "5h"),
+        "week": _rate_limit_window_from_app_server(rate_limit.get("secondary"), week_end, now, "Weekly"),
+        "updated_at": to_iso8601(now),
+    }
+
+
+def _rate_limit_group_is_usable(group: Dict[str, Any]) -> bool:
+    five = group.get("five_h") if isinstance(group.get("five_h"), dict) else {}
+    week = group.get("week") if isinstance(group.get("week"), dict) else {}
+    return five.get("used_percent") is not None or week.get("used_percent") is not None
+
+
+def _app_server_rate_limit_groups(payload: Dict[str, Any], now: datetime, five_end: datetime, week_end: datetime) -> list[Dict[str, Any]]:
+    single = payload.get("rateLimits") if isinstance(payload.get("rateLimits"), dict) else None
+    by_id = payload.get("rateLimitsByLimitId") if isinstance(payload.get("rateLimitsByLimitId"), dict) else None
+
+    groups: list[Dict[str, Any]] = []
+    primary_key = None
+    primary = None
+
+    if by_id:
+        if isinstance(by_id.get("codex"), dict):
+            primary_key = "codex"
+            primary = by_id["codex"]
+        elif single:
+            primary = single
+            limit_id = single.get("limitId")
+            if isinstance(limit_id, str) and isinstance(by_id.get(limit_id), dict):
+                primary_key = limit_id
+        else:
+            primary_key, primary = next(
+                ((key, value) for key, value in by_id.items() if isinstance(value, dict)),
+                (None, None),
+            )
+    elif single:
+        primary = single
+
+    if isinstance(primary, dict):
+        groups.append(_rate_limit_group_from_app_server("Rate limits remaining", primary, now, five_end, week_end))
+
+    if by_id:
+        for key, value in by_id.items():
+            if key == primary_key or not isinstance(value, dict):
+                continue
+            if single and primary_key is None and value.get("limitId") == single.get("limitId"):
+                continue
+            name = value.get("limitName") if isinstance(value.get("limitName"), str) and value.get("limitName") else str(key)
+            groups.append(_rate_limit_group_from_app_server(name, value, now, five_end, week_end))
+
+    groups = [group for group in groups if _rate_limit_group_is_usable(group)]
+    if not groups:
+        raise RuntimeError("Codex app-server returned no usable rate limit windows")
+    return groups
+
+
+def _credits_from_app_server(groups: list[Dict[str, Any]], raw_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    candidates = []
+    single = raw_payload.get("rateLimits") if isinstance(raw_payload.get("rateLimits"), dict) else None
+    if single:
+        candidates.append(single.get("credits"))
+    by_id = raw_payload.get("rateLimitsByLimitId") if isinstance(raw_payload.get("rateLimitsByLimitId"), dict) else None
+    if by_id:
+        candidates.extend(value.get("credits") for value in by_id.values() if isinstance(value, dict))
+
+    for credits in candidates:
+        if not isinstance(credits, dict):
+            continue
+        return {
+            "has_credits": credits.get("hasCredits"),
+            "unlimited": credits.get("unlimited"),
+            "balance": credits.get("balance"),
+        }
+    return None
 
 
 def _manual_percent(section_input: Dict[str, Any]) -> Optional[float]:
@@ -798,8 +1023,84 @@ def resolve_codex_state(cfg: Dict[str, Any], prev_state: Dict[str, Any]) -> Dict
     return state
 
 
+def resolve_app_server_state(cfg: Dict[str, Any], prev_state: Dict[str, Any]) -> Dict[str, Any]:
+    now = datetime.utcnow()
+    five_start, five_end = compute_window(now, int(cfg.get("five_hour_window_hours", 5)))
+    week_start, week_end = compute_week(now, int(cfg.get("week_start_weekday", 1)))
+    payload = fetch_app_server_rate_limits(cfg)
+    groups = _app_server_rate_limit_groups(payload, now, five_end, week_end)
+    main_group = groups[0]
+
+    five_limit = 100.0
+    week_limit = 100.0
+    five_remaining = safe_float(main_group["five_h"].get("remaining_percent"))
+    week_remaining = safe_float(main_group["week"].get("remaining_percent"))
+    five_used = None if five_remaining is None else 100 - five_remaining
+    week_used = None if week_remaining is None else 100 - week_remaining
+    five = QuotaSection(five_limit, five_used, parse_iso8601(main_group["five_h"].get("reset_at")) or five_end, now, "five_h", "%")
+    week = QuotaSection(week_limit, week_used, parse_iso8601(main_group["week"].get("reset_at")) or week_end, now, "week", "%")
+
+    plan_type = None
+    raw_main = payload.get("rateLimits") if isinstance(payload.get("rateLimits"), dict) else None
+    if raw_main:
+        plan_type = raw_main.get("planType")
+
+    state: Dict[str, Any] = {
+        "source": {
+            "provider": "app_server",
+            "api_base": "codex app-server stdio",
+            "last_refresh_at": to_iso8601(now),
+            "refreshed": {
+                "five_h_used_source": "app_server",
+                "week_used_source": "app_server",
+                "plan_type": plan_type,
+                "intervals": {
+                    "five_h_start": to_iso8601(five_start),
+                    "five_h_end": to_iso8601(five_end),
+                    "week_start": to_iso8601(week_start),
+                    "week_end": to_iso8601(week_end),
+                },
+            },
+        },
+        "window_version": 2,
+        "state_file_ttl_seconds": int(cfg.get("state_file_ttl_seconds", 180)),
+        "five_h": five.dict(),
+        "week": week.dict(),
+        "rate_limits": groups,
+    }
+
+    credits = _credits_from_app_server(groups, payload)
+    if credits:
+        state["credits"] = credits
+    return state
+
+
+def resolve_app_server_with_fallback(cfg: Dict[str, Any], prev_state: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        return resolve_app_server_state(cfg, prev_state)
+    except Exception as app_exc:
+        app_cfg = cfg.get("app_server", {})
+        fallback_enabled = True
+        if isinstance(app_cfg, dict):
+            fallback_enabled = bool(app_cfg.get("fallback_to_wham", True))
+        if not fallback_enabled:
+            raise
+        try:
+            fallback = resolve_codex_state(cfg, prev_state)
+        except Exception as wham_exc:
+            raise RuntimeError(f"app_server failed: {app_exc}; codex_wham fallback failed: {wham_exc}") from wham_exc
+        source = fallback.setdefault("source", {})
+        refreshed = source.setdefault("refreshed", {})
+        if isinstance(refreshed, dict):
+            refreshed["fallback_from"] = "app_server"
+            refreshed["fallback_error"] = str(app_exc)
+        return fallback
+
+
 def resolve_state(cfg: Dict[str, Any], prev_state: Dict[str, Any]) -> Dict[str, Any]:
     provider = str(cfg.get("provider", "openai")).strip().lower()
+    if provider in {"app_server", "codex_app_server"}:
+        return resolve_app_server_with_fallback(cfg, prev_state)
     if provider in {"codex", "codex_wham", "chatgpt"}:
         return resolve_codex_state(cfg, prev_state)
     if provider == "manual":
@@ -876,6 +1177,8 @@ def resolve_state(cfg: Dict[str, Any], prev_state: Dict[str, Any]) -> Dict[str, 
 
 def provider_api_base(cfg: Dict[str, Any]) -> Optional[str]:
     provider = str(cfg.get("provider", "openai")).strip().lower()
+    if provider in {"app_server", "codex_app_server"}:
+        return "codex app-server stdio"
     if provider in {"codex", "codex_wham", "chatgpt"}:
         return cfg.get("codex", {}).get("api_base")
     return cfg.get("openai", {}).get("api_base")
@@ -891,7 +1194,7 @@ def parse_args():
         help="Path to state json file written by the plugin and read by the menu-bar app.",
     )
     parser.add_argument("--config", default=None, help="Path to config JSON override.")
-    parser.add_argument("--provider", choices=["openai", "manual", "codex_wham"], help="Override provider.")
+    parser.add_argument("--provider", choices=["openai", "manual", "codex_wham", "app_server"], help="Override provider.")
     parser.add_argument("--five-limit", type=float, default=None, help="Override 5h limit.")
     parser.add_argument("--week-limit", type=float, default=None, help="Override week limit.")
     parser.add_argument("--unit", default=None, help="Manual mode unit label, e.g. messages.")
@@ -969,6 +1272,8 @@ def main() -> int:
             "state_file_ttl_seconds": int(cfg.get("state_file_ttl_seconds", 180)),
             "five_h": prev_state.get("five_h"),
             "week": prev_state.get("week"),
+            "rate_limits": prev_state.get("rate_limits"),
+            "credits": prev_state.get("credits"),
             "error": {
                 "message": str(exc),
                 "updated_at": to_iso8601(datetime.utcnow()),

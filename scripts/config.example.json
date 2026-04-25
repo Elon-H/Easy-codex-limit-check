@@ -1,5 +1,5 @@
 {
-  "provider": "codex_wham",
+  "provider": "app_server",
   "five_hour_window_hours": 5,
   "week_window_days": 7,
   "week_start_weekday": 1,
@@ -23,5 +23,10 @@
     "usage_path": "/wham/usage",
     "auth_file": "~/.codex/auth.json",
     "timeout_seconds": 20
+  },
+  "app_server": {
+    "command": "codex",
+    "timeout_seconds": 20,
+    "fallback_to_wham": true
   }
 }

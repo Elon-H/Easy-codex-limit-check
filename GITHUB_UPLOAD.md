@@ -29,4 +29,4 @@ Before publishing:
 1. Confirm `~/.codex/auth.json` is never committed.
 2. Confirm no `state.json`, `.build/`, or logs are committed.
 3. Run `./install.sh` locally once on a clean clone.
-4. Mention in the README that the default data source uses an internal ChatGPT/Codex endpoint and may change.
+4. Confirm the README says App Server is primary and `/wham/usage` is a legacy fallback.

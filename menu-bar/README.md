@@ -27,8 +27,8 @@ scripts/run_menu_bar.sh
 
 ### 运行前准备
 
-- 默认 `codex_wham` 模式需要本机 Codex 已登录，并且 `~/.codex/auth.json` 中有有效 token。
-- 默认 `codex_wham` 模式不需要 OpenAI API key；它读取本机 Codex 登录态并写入本地状态文件。
+- 默认 `app_server` 模式需要本机 Codex 已登录；它通过本地 `codex app-server --listen stdio://` 读取额度。
+- 默认 `app_server` 模式不需要 OpenAI API key；`codex_wham` 仍作为 legacy fallback。
 - 如果你是 manual 模式，请在配置里将 `provider` 改为 `manual`，并在 `manual` 区域写入额度；启动脚本本身无需钥匙。
 
 ### 启动项脚本

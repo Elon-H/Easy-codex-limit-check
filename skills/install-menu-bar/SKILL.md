@@ -21,7 +21,7 @@ chmod +x scripts/install-launch-agents.sh scripts/run_fetch_quota.sh
 2. 生成并加载 `com.easy-codex-limit-check.fetch`（每分钟跑一次抓数）
 3. 生成并加载 `com.easy-codex-limit-check.menu-bar`（开机启动菜单栏 App）
 
-> 默认 `codex_wham` 模式不需要 API key，但需要本机 Codex 已登录，并能读取 `~/.codex/auth.json`。
+> 默认 `app_server` 模式不需要 API key，但需要本机 Codex 已登录并能运行 `codex app-server --listen stdio://`。
 >
 > openai 模式支持两种秘钥方式：
 > - `OPENAI_API_KEY`（以及可选 `OPENAI_ORGANIZATION_ID`）
@@ -35,7 +35,8 @@ chmod +x scripts/install-launch-agents.sh scripts/run_fetch_quota.sh
 
 ```bash
 cd easy-codex-limit-check/menu-bar
-swift run
+scripts/build_objc_menu_bar.sh
+scripts/run_menu_bar.sh
 ```
 
 ## 步骤 C：卸载

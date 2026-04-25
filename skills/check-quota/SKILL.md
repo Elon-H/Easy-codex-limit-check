@@ -9,19 +9,20 @@ description: Read and refresh the local Codex limit state file used by Easy Code
 
 ## 使用前提
 
-- codex_wham 模式（默认）：本机 Codex 已登录，`~/.codex/auth.json` 中有有效 ChatGPT/Codex token。
+- app_server 模式（默认）：本机 Codex 已登录，脚本通过 `codex app-server --listen stdio://` 调用 `account/rateLimits/read`。
+- codex_wham 模式：legacy fallback，读取 `~/.codex/auth.json` 中的 ChatGPT/Codex token。
 - openai 模式：已设置环境变量 `OPENAI_API_KEY`，或将 Key 放入 Keychain：
   `security add-generic-password -a api_key -s com.easy-codex-limit-check.openai -w <key>`。
 - 如果你使用组织账单：可选设置 `OPENAI_ORGANIZATION_ID`。
 - manual 模式：不需要 API Key，只要在配置里写 `provider: manual` 和 `manual` 区域即可。
 - 建议先执行一次 `./scripts/fetch_quota.py --dry-run`。
 
-### 你当前是 codex_wham 场景（Pro 会员，无 API key）
+### 默认 app_server 场景（Pro 会员，无 API key）
 
 ```bash
 cd easy-codex-limit-check
 python3 ./scripts/fetch_quota.py \
-  --provider codex_wham \
+  --provider app_server \
   --state-path "$HOME/Library/Caches/com.easy-codex-limit-check/state.json"
 ```
 
@@ -59,8 +60,8 @@ cat "$HOME/Library/Caches/com.easy-codex-limit-check/state.json"
     }
   ],
   "source": {
-    "provider": "codex_wham",
-    "api_base": "https://chatgpt.com/backend-api",
+    "provider": "app_server",
+    "api_base": "codex app-server stdio",
     "last_refresh_at": "2026-04-24T15:44:00Z",
     "refreshed": {...}
   },

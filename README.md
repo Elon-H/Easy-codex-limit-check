@@ -12,8 +12,8 @@ The menu dropdown also shows model-specific limits such as `GPT-5.3-Codex-Spark`
 
 ## What It Does
 
-- Reads your local Codex login token from `~/.codex/auth.json`.
-- Fetches Codex/ChatGPT usage from `https://chatgpt.com/backend-api/wham/usage`.
+- Uses the documented Codex App Server JSON-RPC interface over local stdio.
+- Falls back to `https://chatgpt.com/backend-api/wham/usage` when App Server is unavailable.
 - Writes a normalized local state file.
 - Runs a native macOS menu-bar app that updates every 30 seconds.
 - Installs LaunchAgents so the fetcher refreshes every 60 seconds and the menu-bar app starts on login.
@@ -53,25 +53,29 @@ This removes the LaunchAgents. Runtime files may remain under:
 
 ## Data Source
 
-The default provider is `codex_wham`.
+The default provider is `app_server`.
 
-It uses the same signed-in Codex/ChatGPT session available locally on your machine and requests:
+It starts Codex App Server locally over stdio and calls:
 
 ```text
-https://chatgpt.com/backend-api/wham/usage
+account/rateLimits/read
 ```
 
-The endpoint returns used percentages. This project converts them to remaining percentages:
+The response returns used percentages. This project converts them to remaining percentages:
 
 ```text
 remaining_percent = 100 - used_percent
 ```
 
-Important: this is an internal ChatGPT/Codex endpoint, not a public stable API. It works today because Codex itself uses this data shape, but OpenAI can change the endpoint or schema.
+The legacy `codex_wham` provider still exists as a compatibility fallback for older Codex versions or App Server failures. That fallback uses `https://chatgpt.com/backend-api/wham/usage`.
+
+The menu-bar app does not use App Server WebSocket transport. WebSocket is not needed for the local Mac widget and should not be exposed to a network without authentication.
 
 ## Privacy
 
-The app reads `~/.codex/auth.json` only to make the usage request.
+In the default `app_server` mode, Codex manages auth through the local App Server process.
+
+The legacy `codex_wham` fallback reads `~/.codex/auth.json` only to make the fallback usage request.
 
 It does not write your token, email, account id, or user id to the state file.
 
@@ -136,6 +140,7 @@ Validate scripts:
 ```bash
 bash -n menu-bar/scripts/*.sh
 PYTHONPYCACHEPREFIX=/tmp/eclc-pycache python3 -m py_compile scripts/fetch_quota.py
+python3 -m unittest discover -s tests
 ```
 
 ## Repository Description
