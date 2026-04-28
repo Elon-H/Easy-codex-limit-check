@@ -70,6 +70,21 @@ class AppServerProviderTests(unittest.TestCase):
         self.assertEqual(state["five_h"]["remaining"], 70.0)
         self.assertEqual(state["week"]["remaining"], 96.0)
 
+    def test_app_server_one_percent_is_not_scaled_to_one_hundred(self) -> None:
+        payload = {
+            "rateLimits": {
+                "limitId": "codex",
+                "primary": {"usedPercent": 7, "resetsAt": 1770000000, "windowDurationMins": 300},
+                "secondary": {"usedPercent": 1, "resetsAt": 1770500000, "windowDurationMins": 10080},
+            }
+        }
+
+        with patch.object(fetch_quota, "fetch_app_server_rate_limits", return_value=payload):
+            state = fetch_quota.resolve_app_server_state(base_cfg(), {})
+
+        self.assertEqual(state["rate_limits"][0]["week"]["used_percent"], 1.0)
+        self.assertEqual(state["week"]["remaining"], 99.0)
+
     def test_missing_secondary_keeps_usable_primary_bucket(self) -> None:
         payload = {
             "rateLimits": {

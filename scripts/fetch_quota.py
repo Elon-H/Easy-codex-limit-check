@@ -530,6 +530,12 @@ def _clamp_percent(value: Optional[float]) -> Optional[float]:
     return round(max(0.0, min(100.0, percent)), 2)
 
 
+def _clamp_percent_points(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    return round(max(0.0, min(100.0, value)), 2)
+
+
 def _epoch_to_datetime(value: Any) -> Optional[datetime]:
     seconds = safe_float(value)
     if seconds is None:
@@ -590,7 +596,8 @@ def _rate_limit_group_from_codex(
 def _rate_limit_window_from_app_server(window: Any, fallback_reset_at: datetime, now: datetime, label: str) -> Dict[str, Any]:
     if not isinstance(window, dict):
         window = {}
-    used_percent = _clamp_percent(safe_float(window.get("usedPercent")))
+    # Codex App Server reports usedPercent as percentage points, e.g. 1 means 1%.
+    used_percent = _clamp_percent_points(safe_float(window.get("usedPercent")))
     remaining_percent = None if used_percent is None else _percent_display_value(100 - used_percent)
     reset_at = _epoch_to_datetime(window.get("resetsAt")) or fallback_reset_at
     window_minutes = safe_float(window.get("windowDurationMins"))
