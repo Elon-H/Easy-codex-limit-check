@@ -28,5 +28,15 @@
     "command": "codex",
     "timeout_seconds": 20,
     "fallback_to_wham": true
+  },
+  "approvals": {
+    "enabled": true,
+    "command": null,
+    "poll_interval_seconds": 2,
+    "decision_poll_interval_seconds": 0.25,
+    "thread_list_limit": 50,
+    "notify": true,
+    "pulse": true,
+    "reconnect_delay_seconds": 5
   }
 }

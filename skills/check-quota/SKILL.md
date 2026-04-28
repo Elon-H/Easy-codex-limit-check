@@ -16,6 +16,7 @@ description: Read and refresh the local Codex limit state file used by Easy Code
 - 如果你使用组织账单：可选设置 `OPENAI_ORGANIZATION_ID`。
 - manual 模式：不需要 API Key，只要在配置里写 `provider: manual` 和 `manual` 区域即可。
 - 建议先执行一次 `./scripts/fetch_quota.py --dry-run`。
+- approval 状态由 `scripts/watch_approvals.py` 写入 `~/Library/Caches/com.easy-codex-limit-check/approval_state.json`。
 
 ### 默认 app_server 场景（Pro 会员，无 API key）
 

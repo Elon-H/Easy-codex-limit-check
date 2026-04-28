@@ -25,13 +25,18 @@ static NSString *EnvironmentValue(NSString *key) {
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, strong) NSTimer *refreshTimer;
+@property(nonatomic, strong) NSTimer *pulseTimer;
 @property(nonatomic, strong) NSURL *stateURL;
+@property(nonatomic, strong) NSURL *approvalStateURL;
+@property(nonatomic, strong) NSURL *approvalDecisionsURL;
 @property(nonatomic, strong) NSDateFormatter *timeFormatter;
 @property(nonatomic, strong) NSDateFormatter *dateOnlyFormatter;
 @property(nonatomic, strong) NSDateFormatter *detailDateFormatter;
 @property(nonatomic, strong) NSISO8601DateFormatter *isoFormatter;
+@property(nonatomic, strong) NSMutableSet<NSString *> *notifiedApprovalIds;
 @property(nonatomic, copy) NSString *pluginRoot;
 @property(nonatomic, copy) NSString *fetchScript;
+@property(nonatomic, assign) BOOL approvalPulseOn;
 @end
 
 @implementation AppDelegate
@@ -47,6 +52,18 @@ static NSString *EnvironmentValue(NSString *key) {
         statePath = [@"~/Library/Caches/com.easy-codex-limit-check/state.json" stringByExpandingTildeInPath];
     }
     _stateURL = [NSURL fileURLWithPath:statePath isDirectory:NO];
+
+    NSString *approvalStatePath = EnvironmentValue(@"CODEX_APPROVAL_STATE_PATH");
+    if (!approvalStatePath) {
+        approvalStatePath = [@"~/Library/Caches/com.easy-codex-limit-check/approval_state.json" stringByExpandingTildeInPath];
+    }
+    _approvalStateURL = [NSURL fileURLWithPath:approvalStatePath isDirectory:NO];
+
+    NSString *approvalDecisionsPath = EnvironmentValue(@"CODEX_APPROVAL_DECISIONS_PATH");
+    if (!approvalDecisionsPath) {
+        approvalDecisionsPath = [@"~/Library/Caches/com.easy-codex-limit-check/approval_decisions.jsonl" stringByExpandingTildeInPath];
+    }
+    _approvalDecisionsURL = [NSURL fileURLWithPath:approvalDecisionsPath isDirectory:NO];
 
     NSString *pluginPath = EnvironmentValue(@"CODEX_QUOTA_PLUGIN_PATH");
     if (!pluginPath) {
@@ -75,6 +92,9 @@ static NSString *EnvironmentValue(NSString *key) {
     _isoFormatter = [[NSISO8601DateFormatter alloc] init];
     _isoFormatter.formatOptions = NSISO8601DateFormatWithInternetDateTime;
 
+    _notifiedApprovalIds = [NSMutableSet set];
+    _approvalPulseOn = NO;
+
     return self;
 }
 
@@ -95,6 +115,7 @@ static NSString *EnvironmentValue(NSString *key) {
 - (void)applicationWillTerminate:(NSNotification *)notification {
     (void)notification;
     [self.refreshTimer invalidate];
+    [self.pulseTimer invalidate];
 }
 
 - (NSDate *)dateFromString:(NSString *)value {
@@ -203,14 +224,22 @@ static NSString *EnvironmentValue(NSString *key) {
     return stale ? [@"! " stringByAppendingString:title] : title;
 }
 
-- (NSDictionary *)loadState:(NSError **)error {
-    NSData *data = [NSData dataWithContentsOfURL:self.stateURL options:0 error:error];
+- (NSDictionary *)loadJSONFromURL:(NSURL *)url error:(NSError **)error {
+    NSData *data = [NSData dataWithContentsOfURL:url options:0 error:error];
     if (!data) {
         return nil;
     }
 
     id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:error];
     return DictionaryValue(json);
+}
+
+- (NSDictionary *)loadState:(NSError **)error {
+    return [self loadJSONFromURL:self.stateURL error:error];
+}
+
+- (NSDictionary *)loadApprovalState:(NSError **)error {
+    return [self loadJSONFromURL:self.approvalStateURL error:error];
 }
 
 - (NSDate *)lastRefreshDateFromState:(NSDictionary *)state {
@@ -274,14 +303,202 @@ static NSString *EnvironmentValue(NSString *key) {
     return StringValue(error[@"message"]);
 }
 
-- (NSMenu *)menuForState:(NSDictionary *)state loadError:(NSError *)loadError {
+- (NSArray *)pendingApprovalsFromState:(NSDictionary *)approvalState {
+    NSArray *approvals = ArrayValue(approvalState[@"approvals"]);
+    if (!approvals) {
+        return @[];
+    }
+
+    NSMutableArray *pending = [NSMutableArray array];
+    for (id rawApproval in approvals) {
+        NSDictionary *approval = DictionaryValue(rawApproval);
+        if (approval) {
+            [pending addObject:approval];
+        }
+    }
+    return pending;
+}
+
+- (NSString *)approvalErrorMessageFromState:(NSDictionary *)approvalState {
+    NSDictionary *error = DictionaryValue(approvalState[@"error"]);
+    return StringValue(error[@"message"]);
+}
+
+- (NSString *)menuSafeText:(NSString *)text limit:(NSUInteger)limit {
+    if (text.length <= limit) {
+        return text;
+    }
+    if (limit <= 3) {
+        return [text substringToIndex:limit];
+    }
+    return [[text substringToIndex:limit - 3] stringByAppendingString:@"..."];
+}
+
+- (BOOL)approvalPulseEnabled:(NSDictionary *)approvalState {
+    NSNumber *pulse = NumberValue(approvalState[@"pulse"]);
+    return pulse ? pulse.boolValue : YES;
+}
+
+- (BOOL)approvalNotificationsEnabled:(NSDictionary *)approvalState {
+    NSNumber *notify = NumberValue(approvalState[@"notify"]);
+    return notify ? notify.boolValue : YES;
+}
+
+- (void)setStatusTitle:(NSString *)quotaTitle approvals:(NSArray *)approvals approvalState:(NSDictionary *)approvalState {
+    NSString *title = quotaTitle ?: @"quota --";
+    BOOL hasApprovals = approvals.count > 0;
+    if (hasApprovals) {
+        title = [NSString stringWithFormat:@"APPROVAL %lu | %@", (unsigned long)approvals.count, title];
+    }
+
+    if (!self.statusItem.button) {
+        return;
+    }
+
+    if (!hasApprovals) {
+        self.statusItem.button.attributedTitle = [[NSAttributedString alloc] initWithString:title];
+        return;
+    }
+
+    BOOL pulseEnabled = [self approvalPulseEnabled:approvalState];
+    NSColor *color = (pulseEnabled && self.approvalPulseOn) ? NSColor.systemOrangeColor : NSColor.labelColor;
+    NSDictionary *attributes = @{
+        NSForegroundColorAttributeName: color,
+        NSFontAttributeName: [NSFont systemFontOfSize:NSFont.systemFontSize weight:NSFontWeightSemibold]
+    };
+    self.statusItem.button.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:attributes];
+}
+
+- (void)ensurePulseTimerForApprovals:(NSArray *)approvals approvalState:(NSDictionary *)approvalState {
+    BOOL shouldPulse = approvals.count > 0 && [self approvalPulseEnabled:approvalState];
+    if (shouldPulse && !self.pulseTimer) {
+        self.pulseTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
+                                                          target:self
+                                                        selector:@selector(toggleApprovalPulse)
+                                                        userInfo:nil
+                                                         repeats:YES];
+    } else if (!shouldPulse && self.pulseTimer) {
+        [self.pulseTimer invalidate];
+        self.pulseTimer = nil;
+        self.approvalPulseOn = NO;
+    }
+}
+
+- (void)toggleApprovalPulse {
+    self.approvalPulseOn = !self.approvalPulseOn;
+    [self updateMenu];
+}
+
+- (NSString *)approvalSummary:(NSDictionary *)approval {
+    NSString *summary = StringValue(approval[@"summary"]);
+    if (summary.length > 0) {
+        return [self menuSafeText:summary limit:90];
+    }
+    NSString *title = StringValue(approval[@"title"]);
+    return title.length > 0 ? title : @"Codex approval";
+}
+
+- (void)notifyForApprovals:(NSArray *)approvals approvalState:(NSDictionary *)approvalState {
+    if (![self approvalNotificationsEnabled:approvalState]) {
+        return;
+    }
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    for (NSDictionary *approval in approvals) {
+        NSString *approvalId = StringValue(approval[@"id"]);
+        if (approvalId.length == 0 || [self.notifiedApprovalIds containsObject:approvalId]) {
+            continue;
+        }
+        [self.notifiedApprovalIds addObject:approvalId];
+
+        NSUserNotification *notification = [[NSUserNotification alloc] init];
+        notification.title = @"Codex approval needed";
+        notification.informativeText = [self approvalSummary:approval];
+        notification.soundName = NSUserNotificationDefaultSoundName;
+        [NSUserNotificationCenter.defaultUserNotificationCenter deliverNotification:notification];
+    }
+#pragma clang diagnostic pop
+}
+
+- (void)addApproval:(NSDictionary *)approval toMenu:(NSMenu *)menu {
+    NSString *title = StringValue(approval[@"title"]) ?: @"Codex approval";
+    NSString *summary = [self approvalSummary:approval];
+    [self addDisabledItemToMenu:menu title:title];
+    [self addDisabledItemToMenu:menu title:[@"  " stringByAppendingString:summary]];
+
+    NSString *threadTitle = StringValue(approval[@"thread_title"]);
+    if (threadTitle.length > 0) {
+        [self addDisabledItemToMenu:menu title:[@"  Thread: " stringByAppendingString:[self menuSafeText:threadTitle limit:90]]];
+    }
+    NSString *cwd = StringValue(approval[@"cwd"]);
+    if (cwd.length > 0) {
+        [self addDisabledItemToMenu:menu title:[@"  Cwd: " stringByAppendingString:[self menuSafeText:cwd limit:100]]];
+    }
+    NSString *reason = StringValue(approval[@"reason"]);
+    if (reason.length > 0) {
+        [self addDisabledItemToMenu:menu title:[@"  Reason: " stringByAppendingString:[self menuSafeText:reason limit:100]]];
+    }
+
+    NSArray *decisions = ArrayValue(approval[@"decisions"]);
+    NSString *approvalId = StringValue(approval[@"id"]);
+    for (id rawDecision in decisions ?: @[]) {
+        NSDictionary *decision = DictionaryValue(rawDecision);
+        NSString *decisionId = StringValue(decision[@"id"]);
+        NSString *label = StringValue(decision[@"label"]);
+        if (approvalId.length == 0 || decisionId.length == 0 || label.length == 0) {
+            continue;
+        }
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:[@"  " stringByAppendingString:label]
+                                                      action:@selector(approvalDecision:)
+                                               keyEquivalent:@""];
+        item.target = self;
+        item.representedObject = @{@"approval_id": approvalId, @"decision": decisionId};
+        [menu addItem:item];
+    }
+}
+
+- (void)addApprovalsToMenu:(NSMenu *)menu approvalState:(NSDictionary *)approvalState approvals:(NSArray *)approvals loadError:(NSError *)loadError {
+    if (approvals.count > 0) {
+        [self addDisabledItemToMenu:menu title:[NSString stringWithFormat:@"Awaiting Approval (%lu)", (unsigned long)approvals.count]];
+        for (NSDictionary *approval in approvals) {
+            [self addApproval:approval toMenu:menu];
+            [menu addItem:NSMenuItem.separatorItem];
+        }
+        NSMenuItem *openCodexItem = [[NSMenuItem alloc] initWithTitle:@"Open Codex" action:@selector(openCodex:) keyEquivalent:@"c"];
+        openCodexItem.target = self;
+        [menu addItem:openCodexItem];
+        [menu addItem:NSMenuItem.separatorItem];
+        return;
+    }
+
+    if (!approvalState && loadError.code == NSFileReadNoSuchFileError) {
+        return;
+    }
+
+    NSString *approvalError = approvalState ? [self approvalErrorMessageFromState:approvalState] : loadError.localizedDescription;
+    if (approvalError.length > 0) {
+        [self addDisabledItemToMenu:menu title:[@"Approval watcher: " stringByAppendingString:[self menuSafeText:approvalError limit:120]]];
+        [menu addItem:NSMenuItem.separatorItem];
+    }
+}
+
+- (NSMenu *)menuForState:(NSDictionary *)state
+               loadError:(NSError *)loadError
+           approvalState:(NSDictionary *)approvalState
+       approvalLoadError:(NSError *)approvalLoadError {
     BOOL stale = state ? [self isStateStale:state] : YES;
     NSString *title = state ? [self titleFromState:state stale:stale] : @"quota error";
-    self.statusItem.button.title = title;
+    NSArray *approvals = [self pendingApprovalsFromState:approvalState];
+    [self ensurePulseTimerForApprovals:approvals approvalState:approvalState];
+    [self notifyForApprovals:approvals approvalState:approvalState];
+    [self setStatusTitle:title approvals:approvals approvalState:approvalState];
 
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Codex Quota"];
     [self addDisabledItemToMenu:menu title:title];
     [menu addItem:NSMenuItem.separatorItem];
+
+    [self addApprovalsToMenu:menu approvalState:approvalState approvals:approvals loadError:approvalLoadError];
 
     if (state) {
         NSArray *groups = ArrayValue(state[@"rate_limits"]);
@@ -354,7 +571,83 @@ static NSString *EnvironmentValue(NSString *key) {
 - (void)updateMenu {
     NSError *error = nil;
     NSDictionary *state = [self loadState:&error];
-    self.statusItem.menu = [self menuForState:state loadError:error];
+    NSError *approvalError = nil;
+    NSDictionary *approvalState = [self loadApprovalState:&approvalError];
+    self.statusItem.menu = [self menuForState:state loadError:error approvalState:approvalState approvalLoadError:approvalError];
+}
+
+- (BOOL)appendApprovalDecision:(NSDictionary *)decision error:(NSError **)error {
+    NSString *path = self.approvalDecisionsURL.path;
+    NSString *directory = path.stringByDeletingLastPathComponent;
+    if (![NSFileManager.defaultManager createDirectoryAtPath:directory
+                                 withIntermediateDirectories:YES
+                                                  attributes:nil
+                                                       error:error]) {
+        return NO;
+    }
+
+    if (![NSFileManager.defaultManager fileExistsAtPath:path]) {
+        if (![NSFileManager.defaultManager createFileAtPath:path contents:nil attributes:nil]) {
+            if (error) {
+                *error = [NSError errorWithDomain:@"EasyCodexLimitCheck"
+                                             code:1
+                                         userInfo:@{NSLocalizedDescriptionKey: @"Could not create approval decisions file"}];
+            }
+            return NO;
+        }
+    }
+
+    NSData *payload = [NSJSONSerialization dataWithJSONObject:decision options:0 error:error];
+    if (!payload) {
+        return NO;
+    }
+    NSMutableData *line = [NSMutableData dataWithData:payload];
+    [line appendData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]];
+
+    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+    if (!handle) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"EasyCodexLimitCheck"
+                                         code:2
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Could not open approval decisions file"}];
+        }
+        return NO;
+    }
+    @try {
+        [handle seekToEndOfFile];
+        [handle writeData:line];
+        [handle closeFile];
+    } @catch (NSException *exception) {
+        [handle closeFile];
+        if (error) {
+            *error = [NSError errorWithDomain:@"EasyCodexLimitCheck"
+                                         code:3
+                                     userInfo:@{NSLocalizedDescriptionKey: exception.reason ?: @"Could not write approval decision"}];
+        }
+        return NO;
+    }
+    return YES;
+}
+
+- (void)approvalDecision:(id)sender {
+    NSMenuItem *item = (NSMenuItem *)sender;
+    NSDictionary *represented = DictionaryValue(item.representedObject);
+    NSString *approvalId = StringValue(represented[@"approval_id"]);
+    NSString *decisionId = StringValue(represented[@"decision"]);
+    if (approvalId.length == 0 || decisionId.length == 0) {
+        return;
+    }
+
+    NSDictionary *decision = @{
+        @"approval_id": approvalId,
+        @"decision": decisionId,
+        @"created_at": [self.isoFormatter stringFromDate:[NSDate date]]
+    };
+    NSError *error = nil;
+    if (![self appendApprovalDecision:decision error:&error]) {
+        NSLog(@"Failed to append approval decision: %@", error.localizedDescription);
+    }
+    [self updateMenu];
 }
 
 - (void)fetchNow:(id)sender {
@@ -399,6 +692,18 @@ static NSString *EnvironmentValue(NSString *key) {
 - (void)openStateFile:(id)sender {
     (void)sender;
     [NSWorkspace.sharedWorkspace openURL:self.stateURL];
+}
+
+- (void)openCodex:(id)sender {
+    (void)sender;
+    NSTask *task = [[NSTask alloc] init];
+    task.launchPath = @"/usr/bin/open";
+    task.arguments = @[@"-a", @"Codex"];
+    @try {
+        [task launch];
+    } @catch (NSException *exception) {
+        (void)exception;
+    }
 }
 
 - (void)quit:(id)sender {

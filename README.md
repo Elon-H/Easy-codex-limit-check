@@ -16,6 +16,7 @@ The menu dropdown also shows model-specific limits such as `GPT-5.3-Codex-Spark`
 - Falls back to `https://chatgpt.com/backend-api/wham/usage` when App Server is unavailable.
 - Writes a normalized local state file.
 - Runs a native macOS menu-bar app that updates every 30 seconds.
+- Watches Codex approval requests and lets you approve or deny them from the menu bar.
 - Installs LaunchAgents so the fetcher refreshes every 60 seconds and the menu-bar app starts on login.
 
 ## Install
@@ -71,6 +72,26 @@ The legacy `codex_wham` provider still exists as a compatibility fallback for ol
 
 The menu-bar app does not use App Server WebSocket transport. WebSocket is not needed for the local Mac widget and should not be exposed to a network without authentication.
 
+## Approval Watcher
+
+When a Codex thread is waiting on approval, the menu-bar title changes to:
+
+```text
+APPROVAL 1 | 5h 69% 03:05 | W 95% Apr 29
+```
+
+The watcher uses the same local App Server stdio transport and listens for supported approval requests:
+
+```text
+item/commandExecution/requestApproval
+item/fileChange/requestApproval
+item/permissions/requestApproval
+execCommandApproval
+applyPatchApproval
+```
+
+The menu can approve, approve for session, deny, or cancel supported command/file-change approvals. Permission approvals can be granted for the turn, granted for the session, or denied. The app never auto-approves a request.
+
 ## Privacy
 
 In the default `app_server` mode, Codex manages auth through the local App Server process.
@@ -83,6 +104,13 @@ The local state file is:
 
 ```text
 ~/Library/Caches/com.easy-codex-limit-check/state.json
+```
+
+Approval state and menu decisions are stored locally:
+
+```text
+~/Library/Caches/com.easy-codex-limit-check/approval_state.json
+~/Library/Caches/com.easy-codex-limit-check/approval_decisions.jsonl
 ```
 
 Example shape:
@@ -153,7 +181,7 @@ Validate scripts:
 
 ```bash
 bash -n menu-bar/scripts/*.sh
-PYTHONPYCACHEPREFIX=/tmp/eclc-pycache python3 -m py_compile scripts/fetch_quota.py
+PYTHONPYCACHEPREFIX=/tmp/eclc-pycache python3 -m py_compile scripts/fetch_quota.py scripts/watch_approvals.py
 python3 -m unittest discover -s tests
 ```
 

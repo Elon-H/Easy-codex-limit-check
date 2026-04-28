@@ -5,7 +5,7 @@ description: Install, run, and auto-start the macOS menu bar quota widget.
 
 # 安装状态栏显示端
 
-本技能用于把 `menu-bar/` 下的菜单栏 App 与 `scripts/fetch_quota.py` 串起来。
+本技能用于把 `menu-bar/` 下的菜单栏 App、`scripts/fetch_quota.py` 和 `scripts/watch_approvals.py` 串起来。
 
 ## 步骤 A：配置并安装 LaunchAgent（抓数+刷新）
 
@@ -15,13 +15,15 @@ chmod +x scripts/install-launch-agents.sh scripts/run_fetch_quota.sh
 ./scripts/install-launch-agents.sh
 ```
 
-脚本会做三件事：
+脚本会做四件事：
 
 1. 创建状态文件目录 `~/Library/Caches/com.easy-codex-limit-check/`
 2. 生成并加载 `com.easy-codex-limit-check.fetch`（每分钟跑一次抓数）
-3. 生成并加载 `com.easy-codex-limit-check.menu-bar`（开机启动菜单栏 App）
+3. 生成并加载 `com.easy-codex-limit-check.approval-watcher`（监听 Codex awaiting approval）
+4. 生成并加载 `com.easy-codex-limit-check.menu-bar`（开机启动菜单栏 App）
 
 > 默认 `app_server` 模式不需要 API key，但需要本机 Codex 已登录并能运行 `codex app-server --listen stdio://`。
+> approval watcher 使用同一个本地 app-server stdio 入口，不会自动批准请求。
 >
 > openai 模式支持两种秘钥方式：
 > - `OPENAI_API_KEY`（以及可选 `OPENAI_ORGANIZATION_ID`）
