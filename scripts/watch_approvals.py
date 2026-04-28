@@ -8,6 +8,7 @@ import os
 import select
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -24,6 +25,20 @@ MODERN_FILE_CHANGE = "item/fileChange/requestApproval"
 MODERN_PERMISSIONS = "item/permissions/requestApproval"
 LEGACY_EXEC = "execCommandApproval"
 LEGACY_PATCH = "applyPatchApproval"
+ROLLOUT_PENDING_TOOL = "rollout/pendingToolApproval"
+
+DEFAULT_THREAD_SOURCE_KINDS = [
+    "cli",
+    "vscode",
+    "exec",
+    "appServer",
+    "subAgent",
+    "subAgentReview",
+    "subAgentCompact",
+    "subAgentThreadSpawn",
+    "subAgentOther",
+    "unknown",
+]
 
 SUPPORTED_APPROVAL_METHODS = {
     MODERN_COMMAND,
@@ -66,9 +81,14 @@ def parse_config(path: Optional[Path]) -> Dict[str, Any]:
         "approvals": {
             "enabled": True,
             "command": None,
+            "transport": "auto",
             "poll_interval_seconds": 2.0,
             "decision_poll_interval_seconds": 0.25,
             "thread_list_limit": 50,
+            "thread_source_kinds": DEFAULT_THREAD_SOURCE_KINDS,
+            "rollout_scan_enabled": True,
+            "rollout_scan_recent_seconds": 21600,
+            "rollout_scan_max_bytes": 2097152,
             "notify": True,
             "pulse": True,
             "reconnect_delay_seconds": 5.0,
@@ -85,7 +105,7 @@ def parse_config(path: Optional[Path]) -> Dict[str, Any]:
     return cfg
 
 
-def app_server_command(cfg: Dict[str, Any]) -> list[str]:
+def app_server_command(cfg: Dict[str, Any], transport: str = "stdio") -> list[str]:
     approval_cfg = cfg.get("approvals") if isinstance(cfg.get("approvals"), dict) else {}
     app_cfg = cfg.get("app_server") if isinstance(cfg.get("app_server"), dict) else {}
     raw_command = approval_cfg.get("command") or app_cfg.get("command") or "codex"
@@ -108,6 +128,8 @@ def app_server_command(cfg: Dict[str, Any]) -> list[str]:
         elif os.path.exists(bundled):
             command[0] = bundled
 
+    if transport == "proxy":
+        return command + ["app-server", "proxy"]
     return command + ["app-server", "--listen", "stdio://"]
 
 
@@ -161,6 +183,177 @@ def active_flags(thread: Dict[str, Any]) -> list[str]:
 
 def is_waiting_on_approval(thread: Dict[str, Any]) -> bool:
     return "waitingOnApproval" in active_flags(thread)
+
+
+def parse_timestamp_seconds(value: Any) -> Optional[float]:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def codex_home_path(cfg: Dict[str, Any]) -> Path:
+    approval_cfg = cfg.get("approvals") if isinstance(cfg.get("approvals"), dict) else {}
+    raw = approval_cfg.get("codex_home") or os.environ.get("CODEX_HOME") or "~/.codex"
+    return Path(os.path.expanduser(str(raw))).resolve()
+
+
+def read_tail_text(path: Path, max_bytes: int) -> str:
+    if max_bytes <= 0:
+        return ""
+    with path.open("rb") as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        start = max(0, size - max_bytes)
+        f.seek(start)
+        data = f.read()
+    text = data.decode("utf-8", errors="replace")
+    if start > 0:
+        parts = text.split("\n", 1)
+        return parts[1] if len(parts) == 2 else ""
+    return text
+
+
+def recent_rollout_threads(cfg: Dict[str, Any]) -> list[Dict[str, Any]]:
+    approval_cfg = cfg.get("approvals") if isinstance(cfg.get("approvals"), dict) else {}
+    codex_home = codex_home_path(cfg)
+    state_db = Path(os.path.expanduser(str(approval_cfg.get("state_db_path") or codex_home / "state_5.sqlite")))
+    if not state_db.exists():
+        return []
+
+    recent_seconds = int(approval_cfg.get("rollout_scan_recent_seconds", 21600))
+    limit = int(approval_cfg.get("thread_list_limit", 50))
+    updated_after = int(time.time()) - max(recent_seconds, 60)
+
+    conn = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True, timeout=1.0)
+    try:
+        rows = conn.execute(
+            """
+            select id, title, cwd, rollout_path, updated_at
+            from threads
+            where archived = 0
+              and rollout_path != ''
+              and updated_at >= ?
+            order by updated_at desc
+            limit ?
+            """,
+            (updated_after, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    out = []
+    for thread_id, title, cwd, rollout_path, updated_at in rows:
+        path = Path(str(rollout_path)).expanduser()
+        if path.exists():
+            out.append(
+                {
+                    "id": str(thread_id),
+                    "title": str(title or ""),
+                    "cwd": str(cwd or ""),
+                    "rollout_path": path,
+                    "updated_at": updated_at,
+                }
+            )
+    return out
+
+
+def parse_tool_arguments(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def pending_escalated_calls_from_rollout(
+    thread: Dict[str, Any],
+    max_bytes: int,
+    recent_seconds: int,
+) -> Dict[str, Dict[str, Any]]:
+    path = thread.get("rollout_path")
+    if not isinstance(path, Path) or not path.exists():
+        return {}
+
+    now = time.time()
+    output_call_ids: set[str] = set()
+    calls: Dict[str, Dict[str, Any]] = {}
+
+    for raw_line in read_tail_text(path, max_bytes).splitlines():
+        if not raw_line.strip():
+            continue
+        try:
+            event = json.loads(raw_line)
+        except Exception:
+            continue
+        if not isinstance(event, dict):
+            continue
+
+        event_type = event.get("type")
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if event_type == "response_item":
+            item_type = payload.get("type")
+            call_id = payload.get("call_id")
+            if item_type == "function_call_output" and isinstance(call_id, str):
+                output_call_ids.add(call_id)
+                continue
+            if item_type != "function_call" or not isinstance(call_id, str):
+                continue
+            name = payload.get("name")
+            arguments = parse_tool_arguments(payload.get("arguments"))
+            if name != "exec_command" or arguments.get("sandbox_permissions") != "require_escalated":
+                continue
+            timestamp_seconds = parse_timestamp_seconds(event.get("timestamp"))
+            if timestamp_seconds is not None and now - timestamp_seconds > recent_seconds:
+                continue
+            command = stringify_command(arguments.get("cmd"))
+            if command is None:
+                command = short_text(arguments.get("cmd"), 160)
+            reason = arguments.get("justification") if isinstance(arguments.get("justification"), str) else None
+            summary = short_text(command, 140) or short_text(reason, 140) or "Codex needs approval"
+            created_at = event.get("timestamp") if isinstance(event.get("timestamp"), str) else utc_now_iso()
+            calls[call_id] = {
+                "id": f"rollout-{call_id}",
+                "method": ROLLOUT_PENDING_TOOL,
+                "kind": "desktopApproval",
+                "title": "Codex desktop approval",
+                "summary": summary,
+                "detail": "Open Codex to approve or deny this request.",
+                "thread_id": thread.get("id"),
+                "thread_title": short_text(thread.get("title"), 90),
+                "cwd": thread.get("cwd"),
+                "command": command,
+                "reason": reason,
+                "created_at": created_at,
+                "supports_direct_decision": False,
+                "decisions": [],
+                "source": "rollout_scan",
+            }
+        elif event_type == "event_msg":
+            call_id = payload.get("call_id")
+            payload_type = payload.get("type")
+            if isinstance(call_id, str) and isinstance(payload_type, str) and payload_type.endswith("_end"):
+                output_call_ids.add(call_id)
+
+    return {approval["id"]: approval for call_id, approval in calls.items() if call_id not in output_call_ids}
+
+
+def scan_rollout_pending_approvals(cfg: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    approval_cfg = cfg.get("approvals") if isinstance(cfg.get("approvals"), dict) else {}
+    if approval_cfg.get("rollout_scan_enabled") is False:
+        return {}
+    max_bytes = int(approval_cfg.get("rollout_scan_max_bytes", 2097152))
+    recent_seconds = int(approval_cfg.get("rollout_scan_recent_seconds", 21600))
+    out: Dict[str, Dict[str, Any]] = {}
+    for thread in recent_rollout_threads(cfg):
+        out.update(pending_escalated_calls_from_rollout(thread, max_bytes, recent_seconds))
+    return out
 
 
 def approval_identity(method: str, params: Dict[str, Any], server_request_id: Any) -> str:
@@ -320,10 +513,14 @@ class AppServerApprovalWatcher:
         self.proc: Optional[subprocess.Popen[str]] = None
         self.next_id = 1
         self.pending: Dict[str, Dict[str, Any]] = {}
+        self.scanned_pending: Dict[str, Dict[str, Any]] = {}
         self.thread_metadata: Dict[str, Dict[str, Any]] = {}
         self.resumed_threads: set[str] = set()
         self.decision_offset = 0
         self.last_error: Optional[str] = None
+        self.last_scan_error: Optional[str] = None
+        self.transport = "stdio"
+        self.source = "codex app-server stdio"
 
     @property
     def poll_interval(self) -> float:
@@ -338,8 +535,16 @@ class AppServerApprovalWatcher:
         app_cfg = self.cfg.get("app_server") if isinstance(self.cfg.get("app_server"), dict) else {}
         return float(self.approval_cfg.get("timeout_seconds") or app_cfg.get("timeout_seconds") or 20)
 
-    def start(self) -> None:
-        command = app_server_command(self.cfg)
+    def transport_candidates(self) -> list[str]:
+        raw = str(self.approval_cfg.get("transport", "auto")).strip().lower()
+        if raw == "proxy":
+            return ["proxy"]
+        if raw in {"stdio", "listen", "app_server"}:
+            return ["stdio"]
+        return ["proxy", "stdio"]
+
+    def start_with_transport(self, transport: str) -> None:
+        command = app_server_command(self.cfg, transport)
         self.proc = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
@@ -348,6 +553,8 @@ class AppServerApprovalWatcher:
             text=True,
             bufsize=1,
         )
+        self.transport = transport
+        self.source = "codex app-server proxy" if transport == "proxy" else "codex app-server stdio"
         self.call(
             "initialize",
             {
@@ -355,11 +562,23 @@ class AppServerApprovalWatcher:
                     "name": "easy-codex-limit-check-approval-watcher",
                     "title": "Easy Codex Limit Check Approval Watcher",
                     "version": "0.1.0",
-                }
+                },
+                "capabilities": {"experimentalApi": True},
             },
             timeout=self.timeout,
         )
         self.send_notification("initialized", {})
+
+    def start(self) -> None:
+        errors = []
+        for transport in self.transport_candidates():
+            try:
+                self.start_with_transport(transport)
+                return
+            except Exception as exc:
+                errors.append(f"{transport}: {exc}")
+                self.stop()
+        raise RuntimeError("Failed to start Codex app-server approval watcher: " + "; ".join(errors))
 
     def stop(self) -> None:
         proc = self.proc
@@ -464,7 +683,7 @@ class AppServerApprovalWatcher:
         self.write_state()
 
     def handle_notification(self, method: str, params: Any) -> None:
-        if method == "thread/statusChanged" and isinstance(params, dict):
+        if method in {"thread/statusChanged", "thread/status/changed"} and isinstance(params, dict):
             thread_id = params.get("threadId")
             status = params.get("status")
             if isinstance(thread_id, str) and isinstance(status, dict):
@@ -472,6 +691,8 @@ class AppServerApprovalWatcher:
                 metadata["status"] = status
                 if "waitingOnApproval" not in active_flags(metadata):
                     self.drop_pending_for_thread(thread_id)
+        elif method == "serverRequest/resolved" and isinstance(params, dict):
+            self.drop_pending_for_server_request(params.get("requestId"), params.get("threadId"))
         elif method == "turn/completed" and isinstance(params, dict):
             thread_id = params.get("threadId")
             turn_id = params.get("turnId")
@@ -490,16 +711,41 @@ class AppServerApprovalWatcher:
         if removed:
             self.write_state()
 
+    def drop_pending_for_server_request(self, server_request_id: Any, thread_id: Any = None) -> None:
+        removed = False
+        for approval_id, approval in list(self.pending.items()):
+            if request_id_key(approval.get("server_request_id")) != request_id_key(server_request_id):
+                continue
+            if isinstance(thread_id, str) and approval.get("thread_id") != thread_id:
+                continue
+            self.pending.pop(approval_id, None)
+            removed = True
+        if removed:
+            self.write_state()
+
+    def scan_rollout_fallback(self) -> None:
+        try:
+            self.scanned_pending = scan_rollout_pending_approvals(self.cfg)
+            self.last_scan_error = None
+        except Exception as exc:
+            self.last_scan_error = str(exc)
+
     def poll_threads(self) -> None:
         limit = int(self.approval_cfg.get("thread_list_limit", 50))
+        params = {
+            "archived": False,
+            "limit": limit,
+            "sortKey": "updated_at",
+            "sortDirection": "desc",
+        }
+        source_kinds = self.approval_cfg.get("thread_source_kinds")
+        if isinstance(source_kinds, list):
+            cleaned = [item for item in source_kinds if isinstance(item, str) and item]
+            if cleaned:
+                params["sourceKinds"] = cleaned
         response = self.call(
             "thread/list",
-            {
-                "archived": False,
-                "limit": limit,
-                "sortKey": "updated_at",
-                "sortDirection": "desc",
-            },
+            params,
             timeout=self.timeout,
         )
         threads = response.get("data") if isinstance(response.get("data"), list) else []
@@ -530,10 +776,12 @@ class AppServerApprovalWatcher:
                     "threadId": thread_id,
                     "excludeTurns": True,
                     "approvalsReviewer": "user",
+                    "persistExtendedHistory": False,
                 }
             )
             self.resumed_threads.add(thread_id)
 
+        self.scan_rollout_fallback()
         self.last_error = None
         self.write_state()
 
@@ -579,7 +827,9 @@ class AppServerApprovalWatcher:
         self.write_state()
 
     def write_state(self) -> None:
-        approvals = sorted(self.pending.values(), key=lambda item: item.get("created_at", ""))
+        combined = dict(self.scanned_pending)
+        combined.update(self.pending)
+        approvals = sorted(combined.values(), key=lambda item: item.get("created_at", ""))
         payload: Dict[str, Any] = {
             "version": 1,
             "updated_at": utc_now_iso(),
@@ -589,11 +839,16 @@ class AppServerApprovalWatcher:
             "pulse": bool(self.approval_cfg.get("pulse", True)),
             "watcher": {
                 "status": "error" if self.last_error else "ok",
-                "source": "codex app-server stdio",
+                "source": self.source,
+                "transport": self.transport,
+                "direct_pending_count": len(self.pending),
+                "rollout_scan_pending_count": len(self.scanned_pending),
             },
         }
         if self.last_error:
             payload["error"] = {"message": self.last_error, "updated_at": utc_now_iso()}
+        if self.last_scan_error:
+            payload["scan_error"] = {"message": self.last_scan_error, "updated_at": utc_now_iso()}
         write_json(self.state_path, payload)
 
     def run_forever(self) -> None:

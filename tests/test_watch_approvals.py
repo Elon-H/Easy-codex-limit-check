@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 import sys
+import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -134,6 +138,123 @@ class ApprovalNormalizationTests(unittest.TestCase):
 
         self.assertEqual(watcher.sent, [{"id": 42, "result": {"decision": "accept"}}])
         self.assertEqual(watcher.pending, {})
+
+    def test_v2_status_changed_notification_drops_pending(self) -> None:
+        class FakeWatcher(watch_approvals.AppServerApprovalWatcher):
+            def __init__(self) -> None:
+                super().__init__({}, Path("/tmp/approval_state.json"), Path("/tmp/approval_decisions.jsonl"))
+
+            def write_state(self) -> None:
+                return None
+
+        approval = watch_approvals.normalize_approval_request(
+            watch_approvals.MODERN_COMMAND,
+            {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "item-1",
+                "command": "pwd",
+            },
+            42,
+            {},
+        )
+        watcher = FakeWatcher()
+        watcher.pending[approval["id"]] = approval
+
+        watcher.handle_notification(
+            "thread/status/changed",
+            {"threadId": "thread-1", "status": {"type": "idle"}},
+        )
+
+        self.assertEqual(watcher.pending, {})
+
+
+class RolloutScanTests(unittest.TestCase):
+    def write_state_db(self, root: Path, rollout_path: Path) -> None:
+        db = root / "state_5.sqlite"
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                """
+                create table threads (
+                    id text primary key,
+                    title text not null,
+                    cwd text not null,
+                    rollout_path text not null,
+                    updated_at integer not null,
+                    archived integer not null
+                )
+                """
+            )
+            conn.execute(
+                "insert into threads values (?, ?, ?, ?, ?, ?)",
+                ("thread-1", "Needs approval", "/tmp/project", str(rollout_path), int(datetime.now(timezone.utc).timestamp()), 0),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_rollout_scan_detects_unanswered_escalated_exec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rollout = root / "rollout.jsonl"
+            call = {
+                "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "call_id": "call-1",
+                    "arguments": json.dumps(
+                        {
+                            "cmd": "git push origin branch",
+                            "sandbox_permissions": "require_escalated",
+                            "justification": "Need network access",
+                        }
+                    ),
+                },
+            }
+            rollout.write_text(json.dumps(call) + "\n", encoding="utf-8")
+            self.write_state_db(root, rollout)
+
+            approvals = watch_approvals.scan_rollout_pending_approvals(
+                {"approvals": {"codex_home": str(root), "rollout_scan_recent_seconds": 3600}}
+            )
+
+        self.assertEqual(len(approvals), 1)
+        approval = next(iter(approvals.values()))
+        self.assertEqual(approval["method"], watch_approvals.ROLLOUT_PENDING_TOOL)
+        self.assertFalse(approval["supports_direct_decision"])
+        self.assertIn("git push", approval["summary"])
+
+    def test_rollout_scan_ignores_calls_with_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rollout = root / "rollout.jsonl"
+            timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            call = {
+                "timestamp": timestamp,
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "call_id": "call-1",
+                    "arguments": json.dumps({"cmd": "git push", "sandbox_permissions": "require_escalated"}),
+                },
+            }
+            output = {
+                "timestamp": timestamp,
+                "type": "response_item",
+                "payload": {"type": "function_call_output", "call_id": "call-1", "output": "done"},
+            }
+            rollout.write_text(json.dumps(call) + "\n" + json.dumps(output) + "\n", encoding="utf-8")
+            self.write_state_db(root, rollout)
+
+            approvals = watch_approvals.scan_rollout_pending_approvals(
+                {"approvals": {"codex_home": str(root), "rollout_scan_recent_seconds": 3600}}
+            )
+
+        self.assertEqual(approvals, {})
 
 
 if __name__ == "__main__":

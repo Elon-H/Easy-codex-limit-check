@@ -80,7 +80,7 @@ When a Codex thread is waiting on approval, the menu-bar title changes to:
 APPROVAL 1 | 5h 69% 03:05 | W 95% Apr 29
 ```
 
-The watcher uses the same local App Server stdio transport and listens for supported approval requests:
+The watcher first tries the local App Server proxy and falls back to a local stdio App Server process. When App Server can route approval requests to this watcher, the menu supports direct actions for:
 
 ```text
 item/commandExecution/requestApproval
@@ -91,6 +91,8 @@ applyPatchApproval
 ```
 
 The menu can approve, approve for session, deny, or cancel supported command/file-change approvals. Permission approvals can be granted for the turn, granted for the session, or denied. The app never auto-approves a request.
+
+For Codex Desktop builds that do not expose an App Server control socket, the watcher also scans recent local rollout files for pending `require_escalated` tool calls. Those fallback detections still trigger the orange menu-bar approval indicator and a notification, but they only offer `Open Codex` because the active desktop client owns the actual approve/deny prompt.
 
 ## Privacy
 
