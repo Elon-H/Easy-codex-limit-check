@@ -10,7 +10,6 @@ FETCH_PLIST="$LAUNCHD_DIR/$FETCH_LABEL.plist"
 MENU_PLIST="$LAUNCHD_DIR/$MENUBAR_LABEL.plist"
 STATE_PATH="${CODEX_QUOTA_STATE_PATH:-$HOME/Library/Caches/com.easy-codex-limit-check/state.json}"
 CONFIG_PATH="${CODEX_QUOTA_CONFIG_PATH:-$PLUGIN_ROOT/scripts/config.example.json}"
-PYTHON_BIN="${CODEX_QUOTA_PYTHON_BIN:-python3}"
 RUNTIME_DIR="${CODEX_QUOTA_RUNTIME_DIR:-$HOME/Library/Application Support/com.easy-codex-limit-check}"
 RUNTIME_BIN_DIR="$RUNTIME_DIR/bin"
 RUNTIME_SCRIPT_DIR="$RUNTIME_DIR/scripts"
@@ -21,6 +20,38 @@ RUNTIME_RUN_FETCH="$RUNTIME_SCRIPT_DIR/run_fetch_quota.sh"
 BUILD_SCRIPT="$PLUGIN_ROOT/menu-bar/scripts/build_objc_menu_bar.sh"
 BUILT_MENU_BIN="${CODEX_QUOTA_MENU_BAR_BIN:-$PLUGIN_ROOT/menu-bar/.build/release/QuotaMenuBar}"
 BOOTSTRAP_TARGET="gui/$(id -u)"
+
+choose_python_bin() {
+  local candidate resolved
+  for candidate in \
+    "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3" \
+    "/opt/homebrew/bin/python3" \
+    "/usr/local/bin/python3" \
+    "python3" \
+    "/usr/bin/python3"; do
+    if [[ "$candidate" == */* ]]; then
+      [[ -x "$candidate" ]] || continue
+      resolved="$candidate"
+    else
+      resolved="$(command -v "$candidate" 2>/dev/null || true)"
+      [[ -n "$resolved" ]] || continue
+    fi
+
+    if "$resolved" --version >/dev/null 2>&1; then
+      printf '%s\n' "$resolved"
+      return 0
+    fi
+  done
+  return 1
+}
+
+PYTHON_BIN="${CODEX_QUOTA_PYTHON_BIN:-}"
+if [[ -z "$PYTHON_BIN" ]]; then
+  if ! PYTHON_BIN="$(choose_python_bin)"; then
+    echo "No usable python3 found. Set CODEX_QUOTA_PYTHON_BIN to a working Python 3 executable." >&2
+    exit 1
+  fi
+fi
 
 mkdir -p "$LAUNCHD_DIR"
 mkdir -p "$(dirname "$STATE_PATH")"

@@ -31,7 +31,7 @@ Requirements:
 
 - macOS
 - Codex desktop app or Codex CLI already logged in
-- `python3`
+- a working Python 3 executable; the installer prefers Codex's bundled runtime Python when available
 - Xcode Command Line Tools with `clang`
 
 No OpenAI API key is required for the default Codex Pro limit mode.
@@ -117,6 +117,20 @@ Dry run:
 
 ```bash
 python3 ./scripts/fetch_quota.py --config ./scripts/config.example.json --dry-run
+```
+
+## Troubleshooting
+
+If updates stop after installing Xcode, check:
+
+```bash
+python3 --version
+```
+
+If it prints an Xcode license error, reinstall with `./install.sh`; the installer now records a working Python path in the LaunchAgent. You can also fix the system toolchain globally from Terminal:
+
+```bash
+sudo xcodebuild -license accept
 ```
 
 ## Development
