@@ -348,19 +348,30 @@ static NSString *EnvironmentValue(NSString *key) {
     NSDictionary *valueAttrs = @{NSFontAttributeName: valueFont, NSForegroundColorAttributeName: percentColor};
     NSDictionary *resetAttrs = @{NSFontAttributeName: resetFont, NSForegroundColorAttributeName: mutedColor};
 
-    NSString *percentText = [self percentString:remaining];
+    double percent = [self clampedPercent:remaining fallback:0.0];
+    NSString *percentText = remaining ? [NSString stringWithFormat:@"%.0f%%", percent] : @"--";
     CGFloat contentY = rect.origin.y + floor((rect.size.height - 9.0) / 2.0);
+    CGFloat horizontalPadding = 7.0;
+    CGFloat textGap = 5.0;
+    CGFloat barGap = 6.0;
+    CGFloat minBarWidth = 24.0;
     CGFloat labelX = rect.origin.x + 7.0;
-    CGFloat barX = labelX + (label.length > 2 ? 30.0 : 18.0);
-    CGFloat barWidth = label.length > 2 ? 62.0 : 66.0;
-    CGFloat pctX = barX + barWidth + 6.0;
-    CGFloat resetX = pctX + 28.0;
+    CGFloat labelWidth = ceil([label sizeWithAttributes:labelAttrs].width);
+    CGFloat percentWidth = ceil([percentText sizeWithAttributes:valueAttrs].width);
+    CGFloat resetWidth = ceil([resetText sizeWithAttributes:resetAttrs].width);
+    CGFloat resetX = NSMaxX(rect) - horizontalPadding - resetWidth;
+    CGFloat pctX = resetX - textGap - percentWidth;
+    CGFloat barX = labelX + labelWidth + barGap;
+    CGFloat availableBarWidth = floor(pctX - barGap - barX);
+    CGFloat barWidth = availableBarWidth >= minBarWidth ? availableBarWidth : MAX(0.0, availableBarWidth);
 
     [label drawAtPoint:NSMakePoint(labelX, contentY) withAttributes:labelAttrs];
-    [self drawProgressBarInRect:NSMakeRect(barX, rect.origin.y + floor((rect.size.height - 5.0) / 2.0), barWidth, 5.0)
-                         percent:[self clampedPercent:remaining fallback:0.0]
-                           color:barColor
-                          dimmed:dimmed];
+    if (barWidth > 0.0) {
+        [self drawProgressBarInRect:NSMakeRect(barX, rect.origin.y + floor((rect.size.height - 5.0) / 2.0), barWidth, 5.0)
+                             percent:percent
+                               color:barColor
+                              dimmed:dimmed];
+    }
     [percentText drawAtPoint:NSMakePoint(pctX, contentY) withAttributes:valueAttrs];
     [resetText drawAtPoint:NSMakePoint(resetX, contentY) withAttributes:resetAttrs];
 }
@@ -385,9 +396,22 @@ static NSString *EnvironmentValue(NSString *key) {
     BOOL hasApprovals = approvals.count > 0;
     BOOL pulseEnabled = [self approvalPulseEnabled:approvalState];
     BOOL pulseOn = hasApprovals && pulseEnabled && self.approvalPulseOn;
+    NSFont *approvalFont = [NSFont systemFontOfSize:8.8 weight:NSFontWeightBold];
+    NSColor *approvalColor = pulseOn ? [NSColor systemOrangeColor] : [NSColor labelColor];
+    NSDictionary *approvalAttrs = @{
+        NSFontAttributeName: approvalFont,
+        NSForegroundColorAttributeName: approvalColor
+    };
+    NSString *approvalText = nil;
+    if (hasApprovals) {
+        NSString *approvalCountText = approvals.count > 99
+            ? @"99+"
+            : [NSString stringWithFormat:@"%lu", (unsigned long)approvals.count];
+        approvalText = [NSString stringWithFormat:@"审批 %@", approvalCountText];
+    }
 
     CGFloat height = MAX(NSStatusBar.systemStatusBar.thickness, 22.0);
-    CGFloat approvalWidth = hasApprovals ? 46.0 : 0.0;
+    CGFloat approvalWidth = hasApprovals ? ceil([approvalText sizeWithAttributes:approvalAttrs].width) + 8.0 : 0.0;
     CGFloat capsuleGap = 8.0;
     CGFloat fiveWidth = 134.0;
     CGFloat weekWidth = 148.0;
@@ -406,12 +430,6 @@ static NSString *EnvironmentValue(NSString *key) {
     CGFloat x = 0.0;
 
     if (hasApprovals) {
-        NSColor *approvalColor = pulseOn ? [NSColor systemOrangeColor] : [NSColor labelColor];
-        NSDictionary *approvalAttrs = @{
-            NSFontAttributeName: [NSFont systemFontOfSize:8.8 weight:NSFontWeightBold],
-            NSForegroundColorAttributeName: approvalColor
-        };
-        NSString *approvalText = [NSString stringWithFormat:@"审批 %lu", (unsigned long)approvals.count];
         [approvalText drawAtPoint:NSMakePoint(x + 2.0, y + 4.0) withAttributes:approvalAttrs];
         x += approvalWidth;
     }
