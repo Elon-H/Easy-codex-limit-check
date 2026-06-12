@@ -304,8 +304,8 @@ static NSString *EnvironmentValue(NSString *key) {
     percent = MAX(0.0, MIN(100.0, percent));
 
     NSColor *trackColor = dimmed
-        ? [NSColor colorWithCalibratedWhite:0.45 alpha:0.28]
-        : [NSColor colorWithCalibratedWhite:0.18 alpha:0.30];
+        ? [NSColor colorWithCalibratedWhite:0.45 alpha:0.36]
+        : [NSColor colorWithCalibratedWhite:0.18 alpha:0.42];
     NSBezierPath *track = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:rect.size.height / 2.0 yRadius:rect.size.height / 2.0];
     [trackColor setFill];
     [track fill];
@@ -327,25 +327,18 @@ static NSString *EnvironmentValue(NSString *key) {
                      resetText:(NSString *)resetText
                         dimmed:(BOOL)dimmed
                        pulseOn:(BOOL)pulseOn {
-    NSColor *capsuleColor = dimmed
-        ? [NSColor colorWithCalibratedWhite:0.32 alpha:0.22]
-        : [NSColor colorWithCalibratedWhite:0.08 alpha:0.18];
-    NSBezierPath *capsule = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:rect.size.height / 2.0 yRadius:rect.size.height / 2.0];
-    [capsuleColor setFill];
-    [capsule fill];
-
     NSFont *labelFont = [NSFont systemFontOfSize:8.8 weight:NSFontWeightBold];
     NSFont *valueFont = [NSFont monospacedDigitSystemFontOfSize:9.0 weight:NSFontWeightSemibold];
-    NSFont *resetFont = [NSFont monospacedDigitSystemFontOfSize:8.6 weight:NSFontWeightRegular];
+    NSFont *resetFont = [NSFont monospacedDigitSystemFontOfSize:9.4 weight:NSFontWeightMedium];
 
     NSColor *labelColor = dimmed ? [NSColor secondaryLabelColor] : [NSColor labelColor];
-    NSColor *mutedColor = dimmed ? [NSColor tertiaryLabelColor] : [NSColor secondaryLabelColor];
+    NSColor *resetColor = dimmed ? [NSColor secondaryLabelColor] : [NSColor labelColor];
     NSColor *barColor = [self quotaColorForRemainingPercent:remaining dimmed:dimmed];
     NSColor *percentColor = [self percentTextColorForRemainingPercent:remaining dimmed:dimmed pulseOn:pulseOn];
 
     NSDictionary *labelAttrs = @{NSFontAttributeName: labelFont, NSForegroundColorAttributeName: labelColor};
     NSDictionary *valueAttrs = @{NSFontAttributeName: valueFont, NSForegroundColorAttributeName: percentColor};
-    NSDictionary *resetAttrs = @{NSFontAttributeName: resetFont, NSForegroundColorAttributeName: mutedColor};
+    NSDictionary *resetAttrs = @{NSFontAttributeName: resetFont, NSForegroundColorAttributeName: resetColor};
 
     double percent = [self clampedPercent:remaining fallback:0.0];
     NSString *percentText = remaining ? [NSString stringWithFormat:@"%.0f%%", percent] : @"--";
@@ -353,6 +346,7 @@ static NSString *EnvironmentValue(NSString *key) {
     CGFloat horizontalPadding = 7.0;
     CGFloat textGap = 5.0;
     CGFloat barGap = 6.0;
+    CGFloat barHeight = 7.0;
     CGFloat minBarWidth = 24.0;
     CGFloat labelX = rect.origin.x + 7.0;
     CGFloat labelWidth = ceil([label sizeWithAttributes:labelAttrs].width);
@@ -366,7 +360,7 @@ static NSString *EnvironmentValue(NSString *key) {
 
     [label drawAtPoint:NSMakePoint(labelX, contentY) withAttributes:labelAttrs];
     if (barWidth > 0.0) {
-        [self drawProgressBarInRect:NSMakeRect(barX, rect.origin.y + floor((rect.size.height - 5.0) / 2.0), barWidth, 5.0)
+        [self drawProgressBarInRect:NSMakeRect(barX, rect.origin.y + floor((rect.size.height - barHeight) / 2.0), barWidth, barHeight)
                              percent:percent
                                color:barColor
                               dimmed:dimmed];
@@ -412,8 +406,8 @@ static NSString *EnvironmentValue(NSString *key) {
     CGFloat height = MAX(NSStatusBar.systemStatusBar.thickness, 22.0);
     CGFloat approvalWidth = hasApprovals ? ceil([approvalText sizeWithAttributes:approvalAttrs].width) + 8.0 : 0.0;
     CGFloat capsuleGap = 8.0;
-    CGFloat fiveWidth = 134.0;
-    CGFloat weekWidth = 148.0;
+    CGFloat fiveWidth = 140.0;
+    CGFloat weekWidth = 154.0;
     CGFloat staleWidth = stale ? 10.0 : 0.0;
     CGFloat width = approvalWidth + fiveWidth + capsuleGap + weekWidth + staleWidth;
 
