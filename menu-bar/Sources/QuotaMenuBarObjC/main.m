@@ -31,7 +31,6 @@ static NSString *EnvironmentValue(NSString *key) {
 @property(nonatomic, strong) NSURL *approvalDecisionsURL;
 @property(nonatomic, strong) NSDateFormatter *timeFormatter;
 @property(nonatomic, strong) NSDateFormatter *dateOnlyFormatter;
-@property(nonatomic, strong) NSDateFormatter *chineseDateFormatter;
 @property(nonatomic, strong) NSDateFormatter *detailDateFormatter;
 @property(nonatomic, strong) NSISO8601DateFormatter *isoFormatter;
 @property(nonatomic, strong) NSMutableSet<NSString *> *notifiedApprovalIds;
@@ -85,10 +84,6 @@ static NSString *EnvironmentValue(NSString *key) {
     _dateOnlyFormatter = [[NSDateFormatter alloc] init];
     _dateOnlyFormatter.dateFormat = @"MMM d";
     _dateOnlyFormatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
-
-    _chineseDateFormatter = [[NSDateFormatter alloc] init];
-    _chineseDateFormatter.dateFormat = @"M月d日";
-    _chineseDateFormatter.locale = [NSLocale localeWithLocaleIdentifier:@"zh_CN"];
 
     _detailDateFormatter = [[NSDateFormatter alloc] init];
     _detailDateFormatter.dateFormat = @"yyyy-MM-dd HH:mm:ss";
@@ -161,9 +156,16 @@ static NSString *EnvironmentValue(NSString *key) {
     return date ? [self.dateOnlyFormatter stringFromDate:date] : @"--";
 }
 
-- (NSString *)shortChineseDate:(NSString *)value {
+- (NSString *)shortNumericDate:(NSString *)value {
     NSDate *date = [self dateFromString:value];
-    return date ? [self.chineseDateFormatter stringFromDate:date] : @"--";
+    if (!date) {
+        return @"--";
+    }
+
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.dateFormat = @"M/d";
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    return [formatter stringFromDate:date];
 }
 
 - (NSString *)detailTime:(NSString *)value {
@@ -248,30 +250,76 @@ static NSString *EnvironmentValue(NSString *key) {
     return percent;
 }
 
-- (void)drawSegmentedBarInRect:(NSRect)rect percent:(double)percent activeColor:(NSColor *)activeColor dimmed:(BOOL)dimmed {
-    NSInteger segmentCount = 12;
-    CGFloat gap = 2.0;
-    CGFloat segmentWidth = floor((rect.size.width - gap * (segmentCount - 1)) / segmentCount);
-    NSInteger activeCount = (NSInteger)llround((percent / 100.0) * segmentCount);
-    if (activeCount < 0) {
-        activeCount = 0;
+- (NSColor *)colorBetween:(NSColor *)start end:(NSColor *)end amount:(double)amount {
+    amount = MAX(0.0, MIN(1.0, amount));
+    NSColor *a = [start colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    NSColor *b = [end colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+
+    CGFloat ar = 0.0, ag = 0.0, ab = 0.0, aa = 0.0;
+    CGFloat br = 0.0, bg = 0.0, bb = 0.0, ba = 0.0;
+    [a getRed:&ar green:&ag blue:&ab alpha:&aa];
+    [b getRed:&br green:&bg blue:&bb alpha:&ba];
+
+    return [NSColor colorWithCalibratedRed:ar + (br - ar) * amount
+                                     green:ag + (bg - ag) * amount
+                                      blue:ab + (bb - ab) * amount
+                                     alpha:aa + (ba - aa) * amount];
+}
+
+- (NSColor *)quotaColorForRemainingPercent:(NSNumber *)value dimmed:(BOOL)dimmed {
+    double percent = [self clampedPercent:value fallback:0.0];
+    NSColor *green = [NSColor colorWithCalibratedRed:0.55 green:0.90 blue:0.20 alpha:1.0];
+    NSColor *yellow = [NSColor colorWithCalibratedRed:0.95 green:0.78 blue:0.20 alpha:1.0];
+    NSColor *orange = [NSColor colorWithCalibratedRed:1.00 green:0.48 blue:0.14 alpha:1.0];
+    NSColor *red = [NSColor colorWithCalibratedRed:1.00 green:0.24 blue:0.23 alpha:1.0];
+
+    NSColor *color = green;
+    if (percent >= 70.0) {
+        color = green;
+    } else if (percent >= 40.0) {
+        color = [self colorBetween:yellow end:green amount:(percent - 40.0) / 30.0];
+    } else if (percent >= 20.0) {
+        color = [self colorBetween:orange end:yellow amount:(percent - 20.0) / 20.0];
+    } else {
+        color = [self colorBetween:red end:orange amount:percent / 20.0];
     }
-    if (activeCount > segmentCount) {
-        activeCount = segmentCount;
+
+    return dimmed ? [color colorWithAlphaComponent:0.50] : color;
+}
+
+- (NSColor *)percentTextColorForRemainingPercent:(NSNumber *)value dimmed:(BOOL)dimmed pulseOn:(BOOL)pulseOn {
+    if (pulseOn) {
+        return [NSColor systemOrangeColor];
     }
+    if (dimmed) {
+        return [NSColor secondaryLabelColor];
+    }
+    double percent = [self clampedPercent:value fallback:100.0];
+    if (percent < 40.0) {
+        return [self quotaColorForRemainingPercent:value dimmed:NO];
+    }
+    return [NSColor labelColor];
+}
+
+- (void)drawProgressBarInRect:(NSRect)rect percent:(double)percent color:(NSColor *)color dimmed:(BOOL)dimmed {
+    percent = MAX(0.0, MIN(100.0, percent));
 
     NSColor *trackColor = dimmed
-        ? [NSColor colorWithCalibratedWhite:0.36 alpha:0.45]
-        : [NSColor colorWithCalibratedWhite:0.22 alpha:0.55];
-    NSColor *fillColor = dimmed ? [activeColor colorWithAlphaComponent:0.55] : activeColor;
+        ? [NSColor colorWithCalibratedWhite:0.45 alpha:0.28]
+        : [NSColor colorWithCalibratedWhite:0.18 alpha:0.30];
+    NSBezierPath *track = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:rect.size.height / 2.0 yRadius:rect.size.height / 2.0];
+    [trackColor setFill];
+    [track fill];
 
-    for (NSInteger idx = 0; idx < segmentCount; idx++) {
-        CGFloat x = rect.origin.x + idx * (segmentWidth + gap);
-        NSRect segmentRect = NSMakeRect(x, rect.origin.y, segmentWidth, rect.size.height);
-        NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:segmentRect xRadius:2.0 yRadius:2.0];
-        [(idx < activeCount ? fillColor : trackColor) setFill];
-        [path fill];
+    CGFloat fillWidth = floor(rect.size.width * percent / 100.0);
+    if (fillWidth <= 0.0) {
+        return;
     }
+
+    NSRect fillRect = NSMakeRect(rect.origin.x, rect.origin.y, fillWidth, rect.size.height);
+    NSBezierPath *fill = [NSBezierPath bezierPathWithRoundedRect:fillRect xRadius:rect.size.height / 2.0 yRadius:rect.size.height / 2.0];
+    [color setFill];
+    [fill fill];
 }
 
 - (NSImage *)statusImageWithState:(NSDictionary *)state
@@ -291,7 +339,7 @@ static NSString *EnvironmentValue(NSString *key) {
     NSString *fiveText = [self percentString:fiveRemaining];
     NSString *weekText = [self percentString:weekRemaining];
     NSString *fiveReset = [[self shortTime:[self resetAtForWindow:fiveH]] stringByAppendingString:@" 重置"];
-    NSString *weekReset = [[self shortChineseDate:[self resetAtForWindow:week]] stringByAppendingString:@"重置"];
+    NSString *weekReset = [[self shortNumericDate:[self resetAtForWindow:week]] stringByAppendingString:@"重置"];
 
     BOOL hasApprovals = approvals.count > 0;
     BOOL pulseEnabled = [self approvalPulseEnabled:approvalState];
@@ -309,8 +357,6 @@ static NSString *EnvironmentValue(NSString *key) {
     NSColor *labelColor = stale ? [NSColor secondaryLabelColor] : [NSColor labelColor];
     NSColor *mutedColor = stale ? [NSColor tertiaryLabelColor] : [NSColor secondaryLabelColor];
     NSColor *percentColor = pulseOn ? [NSColor systemOrangeColor] : labelColor;
-    NSColor *green = [NSColor colorWithCalibratedRed:0.58 green:0.95 blue:0.20 alpha:1.0];
-
     NSFont *brandFont = [[NSFontManager sharedFontManager] convertFont:[NSFont systemFontOfSize:9.0 weight:NSFontWeightBold]
                                                             toHaveTrait:NSFontItalicTrait];
     NSFont *rowFont = [NSFont systemFontOfSize:9.0 weight:NSFontWeightBold];
@@ -335,13 +381,13 @@ static NSString *EnvironmentValue(NSString *key) {
     [@"5小时" drawAtPoint:NSMakePoint(labelX, topY) withAttributes:rowAttrs];
     [@"周限额" drawAtPoint:NSMakePoint(labelX, bottomY) withAttributes:rowAttrs];
 
-    [self drawSegmentedBarInRect:NSMakeRect(barX, topY + 1.0, 116.0, 6.5)
+    [self drawProgressBarInRect:NSMakeRect(barX, topY + 1.0, 116.0, 6.5)
                          percent:[self clampedPercent:fiveRemaining fallback:0.0]
-                     activeColor:green
+                           color:[self quotaColorForRemainingPercent:fiveRemaining dimmed:stale]
                           dimmed:stale];
-    [self drawSegmentedBarInRect:NSMakeRect(barX, bottomY + 1.0, 116.0, 6.5)
+    [self drawProgressBarInRect:NSMakeRect(barX, bottomY + 1.0, 116.0, 6.5)
                          percent:[self clampedPercent:weekRemaining fallback:0.0]
-                     activeColor:green
+                           color:[self quotaColorForRemainingPercent:weekRemaining dimmed:stale]
                           dimmed:stale];
 
     [[NSString stringWithFormat:@"剩余 %@", fiveText] drawAtPoint:NSMakePoint(valueX, topY) withAttributes:valueAttrs];
