@@ -322,6 +322,49 @@ static NSString *EnvironmentValue(NSString *key) {
     [fill fill];
 }
 
+- (void)drawQuotaCapsuleInRect:(NSRect)rect
+                         label:(NSString *)label
+                     remaining:(NSNumber *)remaining
+                     resetText:(NSString *)resetText
+                        dimmed:(BOOL)dimmed
+                       pulseOn:(BOOL)pulseOn {
+    NSColor *capsuleColor = dimmed
+        ? [NSColor colorWithCalibratedWhite:0.32 alpha:0.22]
+        : [NSColor colorWithCalibratedWhite:0.08 alpha:0.18];
+    NSBezierPath *capsule = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:rect.size.height / 2.0 yRadius:rect.size.height / 2.0];
+    [capsuleColor setFill];
+    [capsule fill];
+
+    NSFont *labelFont = [NSFont systemFontOfSize:8.8 weight:NSFontWeightBold];
+    NSFont *valueFont = [NSFont monospacedDigitSystemFontOfSize:9.0 weight:NSFontWeightSemibold];
+    NSFont *resetFont = [NSFont monospacedDigitSystemFontOfSize:8.6 weight:NSFontWeightRegular];
+
+    NSColor *labelColor = dimmed ? [NSColor secondaryLabelColor] : [NSColor labelColor];
+    NSColor *mutedColor = dimmed ? [NSColor tertiaryLabelColor] : [NSColor secondaryLabelColor];
+    NSColor *barColor = [self quotaColorForRemainingPercent:remaining dimmed:dimmed];
+    NSColor *percentColor = [self percentTextColorForRemainingPercent:remaining dimmed:dimmed pulseOn:pulseOn];
+
+    NSDictionary *labelAttrs = @{NSFontAttributeName: labelFont, NSForegroundColorAttributeName: labelColor};
+    NSDictionary *valueAttrs = @{NSFontAttributeName: valueFont, NSForegroundColorAttributeName: percentColor};
+    NSDictionary *resetAttrs = @{NSFontAttributeName: resetFont, NSForegroundColorAttributeName: mutedColor};
+
+    NSString *percentText = [self percentString:remaining];
+    CGFloat contentY = rect.origin.y + floor((rect.size.height - 9.0) / 2.0);
+    CGFloat labelX = rect.origin.x + 7.0;
+    CGFloat barX = labelX + (label.length > 2 ? 30.0 : 18.0);
+    CGFloat barWidth = label.length > 2 ? 62.0 : 66.0;
+    CGFloat pctX = barX + barWidth + 6.0;
+    CGFloat resetX = pctX + 28.0;
+
+    [label drawAtPoint:NSMakePoint(labelX, contentY) withAttributes:labelAttrs];
+    [self drawProgressBarInRect:NSMakeRect(barX, rect.origin.y + floor((rect.size.height - 5.0) / 2.0), barWidth, 5.0)
+                         percent:[self clampedPercent:remaining fallback:0.0]
+                           color:barColor
+                          dimmed:dimmed];
+    [percentText drawAtPoint:NSMakePoint(pctX, contentY) withAttributes:valueAttrs];
+    [resetText drawAtPoint:NSMakePoint(resetX, contentY) withAttributes:resetAttrs];
+}
+
 - (NSImage *)statusImageWithState:(NSDictionary *)state
                             stale:(BOOL)stale
                         approvals:(NSArray *)approvals
@@ -336,17 +379,21 @@ static NSString *EnvironmentValue(NSString *key) {
 
     NSNumber *fiveRemaining = [self remainingPercentForWindow:fiveH];
     NSNumber *weekRemaining = [self remainingPercentForWindow:week];
-    NSString *fiveText = [self percentString:fiveRemaining];
-    NSString *weekText = [self percentString:weekRemaining];
-    NSString *fiveReset = [[self shortTime:[self resetAtForWindow:fiveH]] stringByAppendingString:@" 重置"];
-    NSString *weekReset = [[self shortNumericDate:[self resetAtForWindow:week]] stringByAppendingString:@"重置"];
+    NSString *fiveReset = [self shortTime:[self resetAtForWindow:fiveH]];
+    NSString *weekReset = [self shortNumericDate:[self resetAtForWindow:week]];
 
     BOOL hasApprovals = approvals.count > 0;
     BOOL pulseEnabled = [self approvalPulseEnabled:approvalState];
     BOOL pulseOn = hasApprovals && pulseEnabled && self.approvalPulseOn;
 
     CGFloat height = MAX(NSStatusBar.systemStatusBar.thickness, 22.0);
-    CGFloat width = hasApprovals ? 392.0 : 356.0;
+    CGFloat approvalWidth = hasApprovals ? 46.0 : 0.0;
+    CGFloat capsuleGap = 8.0;
+    CGFloat fiveWidth = 134.0;
+    CGFloat weekWidth = 148.0;
+    CGFloat staleWidth = stale ? 10.0 : 0.0;
+    CGFloat width = approvalWidth + fiveWidth + capsuleGap + weekWidth + staleWidth;
+
     NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(width, height)];
     image.template = NO;
 
@@ -354,51 +401,42 @@ static NSString *EnvironmentValue(NSString *key) {
     [[NSColor clearColor] setFill];
     NSRectFill(NSMakeRect(0, 0, width, height));
 
-    NSColor *labelColor = stale ? [NSColor secondaryLabelColor] : [NSColor labelColor];
-    NSColor *mutedColor = stale ? [NSColor tertiaryLabelColor] : [NSColor secondaryLabelColor];
-    NSColor *percentColor = pulseOn ? [NSColor systemOrangeColor] : labelColor;
-    NSFont *brandFont = [[NSFontManager sharedFontManager] convertFont:[NSFont systemFontOfSize:9.0 weight:NSFontWeightBold]
-                                                            toHaveTrait:NSFontItalicTrait];
-    NSFont *rowFont = [NSFont systemFontOfSize:9.0 weight:NSFontWeightBold];
-    NSFont *valueFont = [NSFont monospacedDigitSystemFontOfSize:9.0 weight:NSFontWeightSemibold];
-    NSFont *resetFont = [NSFont monospacedDigitSystemFontOfSize:8.5 weight:NSFontWeightRegular];
+    CGFloat capsuleHeight = 18.0;
+    CGFloat y = floor((height - capsuleHeight) / 2.0);
+    CGFloat x = 0.0;
 
-    NSDictionary *brandAttrs = @{NSFontAttributeName: brandFont, NSForegroundColorAttributeName: labelColor};
-    NSDictionary *rowAttrs = @{NSFontAttributeName: rowFont, NSForegroundColorAttributeName: labelColor};
-    NSDictionary *valueAttrs = @{NSFontAttributeName: valueFont, NSForegroundColorAttributeName: percentColor};
-    NSDictionary *resetAttrs = @{NSFontAttributeName: resetFont, NSForegroundColorAttributeName: mutedColor};
+    if (hasApprovals) {
+        NSColor *approvalColor = pulseOn ? [NSColor systemOrangeColor] : [NSColor labelColor];
+        NSDictionary *approvalAttrs = @{
+            NSFontAttributeName: [NSFont systemFontOfSize:8.8 weight:NSFontWeightBold],
+            NSForegroundColorAttributeName: approvalColor
+        };
+        NSString *approvalText = [NSString stringWithFormat:@"审批 %lu", (unsigned long)approvals.count];
+        [approvalText drawAtPoint:NSMakePoint(x + 2.0, y + 4.0) withAttributes:approvalAttrs];
+        x += approvalWidth;
+    }
 
-    CGFloat topY = height - 11.8;
-    CGFloat bottomY = 1.5;
-    CGFloat brandX = 2.0;
-    CGFloat labelX = hasApprovals ? 70.0 : 50.0;
-    CGFloat barX = hasApprovals ? 118.0 : 98.0;
-    CGFloat valueX = hasApprovals ? 250.0 : 230.0;
-    CGFloat resetX = hasApprovals ? 322.0 : 292.0;
+    [self drawQuotaCapsuleInRect:NSMakeRect(x, y, fiveWidth, capsuleHeight)
+                           label:@"5h"
+                       remaining:fiveRemaining
+                       resetText:fiveReset
+                          dimmed:stale
+                         pulseOn:pulseOn];
+    x += fiveWidth + capsuleGap;
 
-    NSString *brand = hasApprovals ? [NSString stringWithFormat:@"审批 %lu", (unsigned long)approvals.count] : @"Codex";
-    [brand drawAtPoint:NSMakePoint(brandX, bottomY + 3.0) withAttributes:brandAttrs];
-    [@"5小时" drawAtPoint:NSMakePoint(labelX, topY) withAttributes:rowAttrs];
-    [@"周限额" drawAtPoint:NSMakePoint(labelX, bottomY) withAttributes:rowAttrs];
-
-    [self drawProgressBarInRect:NSMakeRect(barX, topY + 1.0, 116.0, 6.5)
-                         percent:[self clampedPercent:fiveRemaining fallback:0.0]
-                           color:[self quotaColorForRemainingPercent:fiveRemaining dimmed:stale]
-                          dimmed:stale];
-    [self drawProgressBarInRect:NSMakeRect(barX, bottomY + 1.0, 116.0, 6.5)
-                         percent:[self clampedPercent:weekRemaining fallback:0.0]
-                           color:[self quotaColorForRemainingPercent:weekRemaining dimmed:stale]
-                          dimmed:stale];
-
-    [[NSString stringWithFormat:@"剩余 %@", fiveText] drawAtPoint:NSMakePoint(valueX, topY) withAttributes:valueAttrs];
-    [[NSString stringWithFormat:@"剩余 %@", weekText] drawAtPoint:NSMakePoint(valueX, bottomY) withAttributes:valueAttrs];
-    [fiveReset drawAtPoint:NSMakePoint(resetX, topY) withAttributes:resetAttrs];
-    [weekReset drawAtPoint:NSMakePoint(resetX, bottomY) withAttributes:resetAttrs];
+    [self drawQuotaCapsuleInRect:NSMakeRect(x, y, weekWidth, capsuleHeight)
+                           label:@"Week"
+                       remaining:weekRemaining
+                       resetText:weekReset
+                          dimmed:stale
+                         pulseOn:NO];
 
     if (stale) {
-        NSDictionary *staleAttrs = @{NSFontAttributeName: [NSFont systemFontOfSize:8.0 weight:NSFontWeightBold],
-                                     NSForegroundColorAttributeName: [NSColor systemOrangeColor]};
-        [@"!" drawAtPoint:NSMakePoint(width - 7.0, topY) withAttributes:staleAttrs];
+        NSDictionary *staleAttrs = @{
+            NSFontAttributeName: [NSFont systemFontOfSize:8.0 weight:NSFontWeightBold],
+            NSForegroundColorAttributeName: [NSColor systemOrangeColor]
+        };
+        [@"!" drawAtPoint:NSMakePoint(width - 7.0, y + 4.0) withAttributes:staleAttrs];
     }
 
     [image unlockFocus];
