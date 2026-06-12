@@ -31,6 +31,7 @@ static NSString *EnvironmentValue(NSString *key) {
 @property(nonatomic, strong) NSURL *approvalDecisionsURL;
 @property(nonatomic, strong) NSDateFormatter *timeFormatter;
 @property(nonatomic, strong) NSDateFormatter *dateOnlyFormatter;
+@property(nonatomic, strong) NSDateFormatter *chineseDateFormatter;
 @property(nonatomic, strong) NSDateFormatter *detailDateFormatter;
 @property(nonatomic, strong) NSISO8601DateFormatter *isoFormatter;
 @property(nonatomic, strong) NSMutableSet<NSString *> *notifiedApprovalIds;
@@ -84,6 +85,10 @@ static NSString *EnvironmentValue(NSString *key) {
     _dateOnlyFormatter = [[NSDateFormatter alloc] init];
     _dateOnlyFormatter.dateFormat = @"MMM d";
     _dateOnlyFormatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+
+    _chineseDateFormatter = [[NSDateFormatter alloc] init];
+    _chineseDateFormatter.dateFormat = @"M月d日";
+    _chineseDateFormatter.locale = [NSLocale localeWithLocaleIdentifier:@"zh_CN"];
 
     _detailDateFormatter = [[NSDateFormatter alloc] init];
     _detailDateFormatter.dateFormat = @"yyyy-MM-dd HH:mm:ss";
@@ -156,6 +161,11 @@ static NSString *EnvironmentValue(NSString *key) {
     return date ? [self.dateOnlyFormatter stringFromDate:date] : @"--";
 }
 
+- (NSString *)shortChineseDate:(NSString *)value {
+    NSDate *date = [self dateFromString:value];
+    return date ? [self.chineseDateFormatter stringFromDate:date] : @"--";
+}
+
 - (NSString *)detailTime:(NSString *)value {
     NSDate *date = [self dateFromString:value];
     return date ? [self.detailDateFormatter stringFromDate:date] : @"--";
@@ -222,6 +232,132 @@ static NSString *EnvironmentValue(NSString *key) {
 
     NSString *title = [NSString stringWithFormat:@"5h %@ %@ | W %@ %@", fiveText, fiveReset, weekText, weekReset];
     return stale ? [@"! " stringByAppendingString:title] : title;
+}
+
+- (double)clampedPercent:(NSNumber *)value fallback:(double)fallback {
+    if (!value) {
+        return fallback;
+    }
+    double percent = value.doubleValue;
+    if (percent < 0.0) {
+        return 0.0;
+    }
+    if (percent > 100.0) {
+        return 100.0;
+    }
+    return percent;
+}
+
+- (void)drawSegmentedBarInRect:(NSRect)rect percent:(double)percent activeColor:(NSColor *)activeColor dimmed:(BOOL)dimmed {
+    NSInteger segmentCount = 12;
+    CGFloat gap = 2.0;
+    CGFloat segmentWidth = floor((rect.size.width - gap * (segmentCount - 1)) / segmentCount);
+    NSInteger activeCount = (NSInteger)llround((percent / 100.0) * segmentCount);
+    if (activeCount < 0) {
+        activeCount = 0;
+    }
+    if (activeCount > segmentCount) {
+        activeCount = segmentCount;
+    }
+
+    NSColor *trackColor = dimmed
+        ? [NSColor colorWithCalibratedWhite:0.36 alpha:0.45]
+        : [NSColor colorWithCalibratedWhite:0.22 alpha:0.55];
+    NSColor *fillColor = dimmed ? [activeColor colorWithAlphaComponent:0.55] : activeColor;
+
+    for (NSInteger idx = 0; idx < segmentCount; idx++) {
+        CGFloat x = rect.origin.x + idx * (segmentWidth + gap);
+        NSRect segmentRect = NSMakeRect(x, rect.origin.y, segmentWidth, rect.size.height);
+        NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:segmentRect xRadius:2.0 yRadius:2.0];
+        [(idx < activeCount ? fillColor : trackColor) setFill];
+        [path fill];
+    }
+}
+
+- (NSImage *)statusImageWithState:(NSDictionary *)state
+                            stale:(BOOL)stale
+                        approvals:(NSArray *)approvals
+                    approvalState:(NSDictionary *)approvalState
+                    fallbackTitle:(NSString *)fallbackTitle {
+    NSDictionary *primary = state ? [self primaryGroupFromState:state] : nil;
+    NSDictionary *fiveH = DictionaryValue(primary[@"five_h"]) ?: DictionaryValue(state[@"five_h"]);
+    NSDictionary *week = DictionaryValue(primary[@"week"]) ?: DictionaryValue(state[@"week"]);
+    if (!fiveH && !week) {
+        return nil;
+    }
+
+    NSNumber *fiveRemaining = [self remainingPercentForWindow:fiveH];
+    NSNumber *weekRemaining = [self remainingPercentForWindow:week];
+    NSString *fiveText = [self percentString:fiveRemaining];
+    NSString *weekText = [self percentString:weekRemaining];
+    NSString *fiveReset = [[self shortTime:[self resetAtForWindow:fiveH]] stringByAppendingString:@" 重置"];
+    NSString *weekReset = [[self shortChineseDate:[self resetAtForWindow:week]] stringByAppendingString:@"重置"];
+
+    BOOL hasApprovals = approvals.count > 0;
+    BOOL pulseEnabled = [self approvalPulseEnabled:approvalState];
+    BOOL pulseOn = hasApprovals && pulseEnabled && self.approvalPulseOn;
+
+    CGFloat height = MAX(NSStatusBar.systemStatusBar.thickness, 22.0);
+    CGFloat width = hasApprovals ? 392.0 : 356.0;
+    NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(width, height)];
+    image.template = NO;
+
+    [image lockFocus];
+    [[NSColor clearColor] setFill];
+    NSRectFill(NSMakeRect(0, 0, width, height));
+
+    NSColor *labelColor = stale ? [NSColor secondaryLabelColor] : [NSColor labelColor];
+    NSColor *mutedColor = stale ? [NSColor tertiaryLabelColor] : [NSColor secondaryLabelColor];
+    NSColor *percentColor = pulseOn ? [NSColor systemOrangeColor] : labelColor;
+    NSColor *green = [NSColor colorWithCalibratedRed:0.58 green:0.95 blue:0.20 alpha:1.0];
+
+    NSFont *brandFont = [[NSFontManager sharedFontManager] convertFont:[NSFont systemFontOfSize:9.0 weight:NSFontWeightBold]
+                                                            toHaveTrait:NSFontItalicTrait];
+    NSFont *rowFont = [NSFont systemFontOfSize:9.0 weight:NSFontWeightBold];
+    NSFont *valueFont = [NSFont monospacedDigitSystemFontOfSize:9.0 weight:NSFontWeightSemibold];
+    NSFont *resetFont = [NSFont monospacedDigitSystemFontOfSize:8.5 weight:NSFontWeightRegular];
+
+    NSDictionary *brandAttrs = @{NSFontAttributeName: brandFont, NSForegroundColorAttributeName: labelColor};
+    NSDictionary *rowAttrs = @{NSFontAttributeName: rowFont, NSForegroundColorAttributeName: labelColor};
+    NSDictionary *valueAttrs = @{NSFontAttributeName: valueFont, NSForegroundColorAttributeName: percentColor};
+    NSDictionary *resetAttrs = @{NSFontAttributeName: resetFont, NSForegroundColorAttributeName: mutedColor};
+
+    CGFloat topY = height - 11.8;
+    CGFloat bottomY = 1.5;
+    CGFloat brandX = 2.0;
+    CGFloat labelX = hasApprovals ? 70.0 : 50.0;
+    CGFloat barX = hasApprovals ? 118.0 : 98.0;
+    CGFloat valueX = hasApprovals ? 250.0 : 230.0;
+    CGFloat resetX = hasApprovals ? 322.0 : 292.0;
+
+    NSString *brand = hasApprovals ? [NSString stringWithFormat:@"审批 %lu", (unsigned long)approvals.count] : @"Codex";
+    [brand drawAtPoint:NSMakePoint(brandX, bottomY + 3.0) withAttributes:brandAttrs];
+    [@"5小时" drawAtPoint:NSMakePoint(labelX, topY) withAttributes:rowAttrs];
+    [@"周限额" drawAtPoint:NSMakePoint(labelX, bottomY) withAttributes:rowAttrs];
+
+    [self drawSegmentedBarInRect:NSMakeRect(barX, topY + 1.0, 116.0, 6.5)
+                         percent:[self clampedPercent:fiveRemaining fallback:0.0]
+                     activeColor:green
+                          dimmed:stale];
+    [self drawSegmentedBarInRect:NSMakeRect(barX, bottomY + 1.0, 116.0, 6.5)
+                         percent:[self clampedPercent:weekRemaining fallback:0.0]
+                     activeColor:green
+                          dimmed:stale];
+
+    [[NSString stringWithFormat:@"剩余 %@", fiveText] drawAtPoint:NSMakePoint(valueX, topY) withAttributes:valueAttrs];
+    [[NSString stringWithFormat:@"剩余 %@", weekText] drawAtPoint:NSMakePoint(valueX, bottomY) withAttributes:valueAttrs];
+    [fiveReset drawAtPoint:NSMakePoint(resetX, topY) withAttributes:resetAttrs];
+    [weekReset drawAtPoint:NSMakePoint(resetX, bottomY) withAttributes:resetAttrs];
+
+    if (stale) {
+        NSDictionary *staleAttrs = @{NSFontAttributeName: [NSFont systemFontOfSize:8.0 weight:NSFontWeightBold],
+                                     NSForegroundColorAttributeName: [NSColor systemOrangeColor]};
+        [@"!" drawAtPoint:NSMakePoint(width - 7.0, topY) withAttributes:staleAttrs];
+    }
+
+    [image unlockFocus];
+    image.accessibilityDescription = fallbackTitle ?: @"Codex quota";
+    return image;
 }
 
 - (NSDictionary *)loadJSONFromURL:(NSURL *)url error:(NSError **)error {
@@ -344,7 +480,11 @@ static NSString *EnvironmentValue(NSString *key) {
     return notify ? notify.boolValue : YES;
 }
 
-- (void)setStatusTitle:(NSString *)quotaTitle approvals:(NSArray *)approvals approvalState:(NSDictionary *)approvalState {
+- (void)setStatusDisplayForState:(NSDictionary *)state
+                            stale:(BOOL)stale
+                            title:(NSString *)quotaTitle
+                        approvals:(NSArray *)approvals
+                    approvalState:(NSDictionary *)approvalState {
     NSString *title = quotaTitle ?: @"quota --";
     BOOL hasApprovals = approvals.count > 0;
     if (hasApprovals) {
@@ -355,6 +495,23 @@ static NSString *EnvironmentValue(NSString *key) {
         return;
     }
 
+    NSImage *statusImage = [self statusImageWithState:state
+                                               stale:stale
+                                           approvals:approvals
+                                       approvalState:approvalState
+                                       fallbackTitle:title];
+    if (statusImage) {
+        self.statusItem.length = statusImage.size.width + 8.0;
+        self.statusItem.button.title = @"";
+        self.statusItem.button.attributedTitle = [[NSAttributedString alloc] initWithString:@""];
+        self.statusItem.button.image = statusImage;
+        self.statusItem.button.imagePosition = NSImageOnly;
+        self.statusItem.button.toolTip = title;
+        return;
+    }
+
+    self.statusItem.length = NSVariableStatusItemLength;
+    self.statusItem.button.image = nil;
     if (!hasApprovals) {
         self.statusItem.button.attributedTitle = [[NSAttributedString alloc] initWithString:title];
         return;
@@ -492,7 +649,7 @@ static NSString *EnvironmentValue(NSString *key) {
     NSArray *approvals = [self pendingApprovalsFromState:approvalState];
     [self ensurePulseTimerForApprovals:approvals approvalState:approvalState];
     [self notifyForApprovals:approvals approvalState:approvalState];
-    [self setStatusTitle:title approvals:approvals approvalState:approvalState];
+    [self setStatusDisplayForState:state stale:stale title:title approvals:approvals approvalState:approvalState];
 
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Codex Quota"];
     [self addDisabledItemToMenu:menu title:title];
