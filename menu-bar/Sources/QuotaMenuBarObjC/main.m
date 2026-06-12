@@ -177,7 +177,7 @@ static NSString *EnvironmentValue(NSString *key) {
     if (!value) {
         return @"--";
     }
-    return [NSString stringWithFormat:@"%.0f%%", value.doubleValue];
+    return [NSString stringWithFormat:@"%.0f%%", [self clampedPercent:value fallback:0.0]];
 }
 
 - (NSNumber *)remainingPercentForWindow:(NSDictionary *)window {
@@ -226,13 +226,12 @@ static NSString *EnvironmentValue(NSString *key) {
     NSString *fiveText = [self percentString:[self remainingPercentForWindow:fiveH]];
     NSString *weekText = [self percentString:[self remainingPercentForWindow:week]];
     NSString *fiveReset = [self shortTime:[self resetAtForWindow:fiveH]];
-    NSString *weekReset = [self shortDate:[self resetAtForWindow:week]];
 
     if (!fiveH && !week) {
         return stale ? @"quota stale" : @"quota --";
     }
 
-    NSString *title = [NSString stringWithFormat:@"5h %@ %@ | W %@ %@", fiveText, fiveReset, weekText, weekReset];
+    NSString *title = [NSString stringWithFormat:@"5h %@ %@ | Week %@ %@", fiveText, fiveReset, weekText, [self shortNumericDate:[self resetAtForWindow:week]]];
     return stale ? [@"! " stringByAppendingString:title] : title;
 }
 
