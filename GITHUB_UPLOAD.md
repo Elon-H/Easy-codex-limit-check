@@ -9,7 +9,7 @@ https://github.com/Elon-H/Easy-codex-limit-check
 Recommended GitHub description:
 
 ```text
-macOS menu-bar widget for checking Codex Pro 5h and weekly rate-limit remaining percentages from your local Codex login.
+macOS menu-bar widget for checking Codex Pro 5h and weekly rate-limit remaining percentages with compact native progress bars.
 ```
 
 Recommended topics:
