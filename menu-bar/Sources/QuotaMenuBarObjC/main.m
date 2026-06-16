@@ -26,7 +26,8 @@ static const CGFloat QuotaHorizontalPadding = 5.0;
 static const CGFloat QuotaInlineGap = 4.0;
 static const CGFloat QuotaBarWidth = 38.0;
 static const CGFloat QuotaMinBarWidth = 32.0;
-static const CGFloat QuotaBarHeight = 15.0;
+static const CGFloat QuotaBarHeight = 14.0;
+static const CGFloat QuotaBarYOffset = 1.0;
 
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSStatusItem *statusItem;
@@ -384,7 +385,7 @@ static const CGFloat QuotaBarHeight = 15.0;
 
     [label drawAtPoint:NSMakePoint(labelX, labelY) withAttributes:labelAttrs];
     if (barWidth > 0.0) {
-        [self drawQuotaBarInRect:NSMakeRect(barX, rect.origin.y + floor((rect.size.height - QuotaBarHeight) / 2.0), barWidth, QuotaBarHeight)
+        [self drawQuotaBarInRect:NSMakeRect(barX, rect.origin.y + floor((rect.size.height - QuotaBarHeight) / 2.0) + QuotaBarYOffset, barWidth, QuotaBarHeight)
                           percent:percent
                             color:barColor
                              text:percentText
