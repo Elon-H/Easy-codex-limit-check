@@ -22,10 +22,10 @@ static NSString *EnvironmentValue(NSString *key) {
     return value.length > 0 ? value : nil;
 }
 
-static const CGFloat QuotaHorizontalPadding = 5.0;
-static const CGFloat QuotaInlineGap = 4.0;
-static const CGFloat QuotaBarWidth = 38.0;
-static const CGFloat QuotaMinBarWidth = 32.0;
+static const CGFloat QuotaHorizontalPadding = 3.0;
+static const CGFloat QuotaInlineGap = 3.0;
+static const CGFloat QuotaBarWidth = 36.0;
+static const CGFloat QuotaMinBarWidth = 30.0;
 static const CGFloat QuotaBarHeight = 14.0;
 static const CGFloat QuotaBarYOffset = 0.0;
 static const CGFloat QuotaPercentTextYOffset = 0.25;
@@ -326,11 +326,11 @@ static const CGFloat QuotaPercentTextYOffset = 0.25;
 }
 
 - (NSFont *)quotaLabelFont {
-    return [NSFont systemFontOfSize:9.8 weight:NSFontWeightBold];
+    return [NSFont systemFontOfSize:10.8 weight:NSFontWeightSemibold];
 }
 
 - (NSFont *)quotaResetFont {
-    return [NSFont monospacedDigitSystemFontOfSize:10.4 weight:NSFontWeightSemibold];
+    return [NSFont monospacedDigitSystemFontOfSize:10.8 weight:NSFontWeightSemibold];
 }
 
 - (CGFloat)quotaCapsuleWidthForLabel:(NSString *)label resetText:(NSString *)resetText {
@@ -431,7 +431,7 @@ static const CGFloat QuotaPercentTextYOffset = 0.25;
 
     CGFloat height = MAX(NSStatusBar.systemStatusBar.thickness, 22.0);
     CGFloat approvalWidth = hasApprovals ? ceil([approvalText sizeWithAttributes:approvalAttrs].width) + 8.0 : 0.0;
-    CGFloat capsuleGap = 5.0;
+    CGFloat capsuleGap = 3.0;
     CGFloat fiveWidth = [self quotaCapsuleWidthForLabel:@"5h" resetText:fiveReset];
     CGFloat weekWidth = [self quotaCapsuleWidthForLabel:@"Week" resetText:weekReset];
     CGFloat staleWidth = stale ? 10.0 : 0.0;
@@ -622,7 +622,7 @@ static const CGFloat QuotaPercentTextYOffset = 0.25;
                                        approvalState:approvalState
                                        fallbackTitle:title];
     if (statusImage) {
-        self.statusItem.length = statusImage.size.width + 8.0;
+        self.statusItem.length = statusImage.size.width + 4.0;
         self.statusItem.button.title = @"";
         self.statusItem.button.attributedTitle = [[NSAttributedString alloc] initWithString:@""];
         self.statusItem.button.image = statusImage;
