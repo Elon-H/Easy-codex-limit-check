@@ -27,7 +27,8 @@ static const CGFloat QuotaInlineGap = 4.0;
 static const CGFloat QuotaBarWidth = 38.0;
 static const CGFloat QuotaMinBarWidth = 32.0;
 static const CGFloat QuotaBarHeight = 14.0;
-static const CGFloat QuotaBarYOffset = 1.0;
+static const CGFloat QuotaBarYOffset = 0.0;
+static const CGFloat QuotaPercentTextYOffset = 0.25;
 
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSStatusItem *statusItem;
@@ -320,7 +321,7 @@ static const CGFloat QuotaBarYOffset = 1.0;
     NSDictionary *textAttrs = @{NSFontAttributeName: textFont, NSForegroundColorAttributeName: textColor};
     NSSize textSize = [text sizeWithAttributes:textAttrs];
     CGFloat textX = rect.origin.x + floor((rect.size.width - textSize.width) / 2.0);
-    CGFloat textY = rect.origin.y + floor((rect.size.height - textSize.height) / 2.0) - 0.5;
+    CGFloat textY = rect.origin.y + floor((rect.size.height - textSize.height) / 2.0) + QuotaPercentTextYOffset;
     [text drawAtPoint:NSMakePoint(textX, textY) withAttributes:textAttrs];
 }
 
