@@ -22,6 +22,12 @@ static NSString *EnvironmentValue(NSString *key) {
     return value.length > 0 ? value : nil;
 }
 
+static const CGFloat QuotaHorizontalPadding = 5.0;
+static const CGFloat QuotaInlineGap = 4.0;
+static const CGFloat QuotaBarWidth = 38.0;
+static const CGFloat QuotaMinBarWidth = 32.0;
+static const CGFloat QuotaBarHeight = 15.0;
+
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, strong) NSTimer *refreshTimer;
@@ -286,39 +292,57 @@ static NSString *EnvironmentValue(NSString *key) {
     return dimmed ? [color colorWithAlphaComponent:0.50] : color;
 }
 
-- (NSColor *)percentTextColorForRemainingPercent:(NSNumber *)value dimmed:(BOOL)dimmed pulseOn:(BOOL)pulseOn {
-    if (pulseOn) {
-        return [NSColor systemOrangeColor];
-    }
-    if (dimmed) {
-        return [NSColor secondaryLabelColor];
-    }
-    double percent = [self clampedPercent:value fallback:100.0];
-    if (percent < 40.0) {
-        return [self quotaColorForRemainingPercent:value dimmed:NO];
-    }
-    return [NSColor labelColor];
-}
-
-- (void)drawProgressBarInRect:(NSRect)rect percent:(double)percent color:(NSColor *)color dimmed:(BOOL)dimmed {
+- (void)drawQuotaBarInRect:(NSRect)rect percent:(double)percent color:(NSColor *)color text:(NSString *)text dimmed:(BOOL)dimmed {
     percent = MAX(0.0, MIN(100.0, percent));
 
     NSColor *trackColor = dimmed
-        ? [NSColor colorWithCalibratedWhite:0.45 alpha:0.36]
-        : [NSColor colorWithCalibratedWhite:0.18 alpha:0.42];
+        ? [NSColor colorWithCalibratedWhite:0.42 alpha:0.38]
+        : [NSColor colorWithCalibratedWhite:0.12 alpha:0.55];
+    NSColor *fillColor = dimmed ? [color colorWithAlphaComponent:0.55] : color;
+
     NSBezierPath *track = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:rect.size.height / 2.0 yRadius:rect.size.height / 2.0];
     [trackColor setFill];
     [track fill];
 
+    [NSGraphicsContext saveGraphicsState];
+    [track addClip];
     CGFloat fillWidth = floor(rect.size.width * percent / 100.0);
-    if (fillWidth <= 0.0) {
-        return;
+    if (fillWidth > 0.0) {
+        NSRect fillRect = NSMakeRect(rect.origin.x, rect.origin.y, fillWidth, rect.size.height);
+        [fillColor setFill];
+        NSRectFill(fillRect);
     }
+    [NSGraphicsContext restoreGraphicsState];
 
-    NSRect fillRect = NSMakeRect(rect.origin.x, rect.origin.y, fillWidth, rect.size.height);
-    NSBezierPath *fill = [NSBezierPath bezierPathWithRoundedRect:fillRect xRadius:rect.size.height / 2.0 yRadius:rect.size.height / 2.0];
-    [color setFill];
-    [fill fill];
+    NSFont *textFont = [NSFont monospacedDigitSystemFontOfSize:10.2 weight:NSFontWeightHeavy];
+    NSColor *textColor = dimmed ? [NSColor secondaryLabelColor] : (percent >= 52.0 ? [NSColor blackColor] : [NSColor whiteColor]);
+    NSDictionary *textAttrs = @{NSFontAttributeName: textFont, NSForegroundColorAttributeName: textColor};
+    NSSize textSize = [text sizeWithAttributes:textAttrs];
+    CGFloat textX = rect.origin.x + floor((rect.size.width - textSize.width) / 2.0);
+    CGFloat textY = rect.origin.y + floor((rect.size.height - textSize.height) / 2.0) - 0.5;
+    [text drawAtPoint:NSMakePoint(textX, textY) withAttributes:textAttrs];
+}
+
+- (NSFont *)quotaLabelFont {
+    return [NSFont systemFontOfSize:9.8 weight:NSFontWeightBold];
+}
+
+- (NSFont *)quotaResetFont {
+    return [NSFont monospacedDigitSystemFontOfSize:10.4 weight:NSFontWeightSemibold];
+}
+
+- (CGFloat)quotaCapsuleWidthForLabel:(NSString *)label resetText:(NSString *)resetText {
+    NSDictionary *labelAttrs = @{NSFontAttributeName: [self quotaLabelFont]};
+    NSDictionary *resetAttrs = @{NSFontAttributeName: [self quotaResetFont]};
+    CGFloat labelWidth = ceil([label sizeWithAttributes:labelAttrs].width);
+    CGFloat resetWidth = ceil([resetText sizeWithAttributes:resetAttrs].width);
+    return ceil(QuotaHorizontalPadding
+                + labelWidth
+                + QuotaInlineGap
+                + QuotaBarWidth
+                + QuotaInlineGap
+                + resetWidth
+                + QuotaHorizontalPadding);
 }
 
 - (void)drawQuotaCapsuleInRect:(NSRect)rect
@@ -327,46 +351,46 @@ static NSString *EnvironmentValue(NSString *key) {
                      resetText:(NSString *)resetText
                         dimmed:(BOOL)dimmed
                        pulseOn:(BOOL)pulseOn {
-    NSFont *labelFont = [NSFont systemFontOfSize:8.8 weight:NSFontWeightBold];
-    NSFont *valueFont = [NSFont monospacedDigitSystemFontOfSize:9.0 weight:NSFontWeightSemibold];
-    NSFont *resetFont = [NSFont monospacedDigitSystemFontOfSize:9.4 weight:NSFontWeightMedium];
+    NSFont *labelFont = [self quotaLabelFont];
+    NSFont *resetFont = [self quotaResetFont];
 
     NSColor *labelColor = dimmed ? [NSColor secondaryLabelColor] : [NSColor labelColor];
     NSColor *resetColor = dimmed ? [NSColor secondaryLabelColor] : [NSColor labelColor];
     NSColor *barColor = [self quotaColorForRemainingPercent:remaining dimmed:dimmed];
-    NSColor *percentColor = [self percentTextColorForRemainingPercent:remaining dimmed:dimmed pulseOn:pulseOn];
+    if (pulseOn) {
+        barColor = [NSColor systemOrangeColor];
+    }
 
     NSDictionary *labelAttrs = @{NSFontAttributeName: labelFont, NSForegroundColorAttributeName: labelColor};
-    NSDictionary *valueAttrs = @{NSFontAttributeName: valueFont, NSForegroundColorAttributeName: percentColor};
     NSDictionary *resetAttrs = @{NSFontAttributeName: resetFont, NSForegroundColorAttributeName: resetColor};
 
     double percent = [self clampedPercent:remaining fallback:0.0];
     NSString *percentText = remaining ? [NSString stringWithFormat:@"%.0f%%", percent] : @"--";
-    CGFloat contentY = rect.origin.y + floor((rect.size.height - 9.0) / 2.0);
-    CGFloat horizontalPadding = 7.0;
-    CGFloat textGap = 5.0;
-    CGFloat barGap = 6.0;
-    CGFloat barHeight = 7.0;
-    CGFloat minBarWidth = 24.0;
-    CGFloat labelX = rect.origin.x + 7.0;
+    CGFloat labelX = rect.origin.x + QuotaHorizontalPadding;
     CGFloat labelWidth = ceil([label sizeWithAttributes:labelAttrs].width);
-    CGFloat percentWidth = ceil([percentText sizeWithAttributes:valueAttrs].width);
     CGFloat resetWidth = ceil([resetText sizeWithAttributes:resetAttrs].width);
-    CGFloat resetX = NSMaxX(rect) - horizontalPadding - resetWidth;
-    CGFloat pctX = resetX - textGap - percentWidth;
-    CGFloat barX = labelX + labelWidth + barGap;
-    CGFloat availableBarWidth = floor(pctX - barGap - barX);
-    CGFloat barWidth = availableBarWidth >= minBarWidth ? availableBarWidth : MAX(0.0, availableBarWidth);
-
-    [label drawAtPoint:NSMakePoint(labelX, contentY) withAttributes:labelAttrs];
-    if (barWidth > 0.0) {
-        [self drawProgressBarInRect:NSMakeRect(barX, rect.origin.y + floor((rect.size.height - barHeight) / 2.0), barWidth, barHeight)
-                             percent:percent
-                               color:barColor
-                              dimmed:dimmed];
+    CGFloat resetX = NSMaxX(rect) - QuotaHorizontalPadding - resetWidth;
+    CGFloat barX = labelX + labelWidth + QuotaInlineGap;
+    CGFloat availableBarWidth = floor(resetX - QuotaInlineGap - barX);
+    CGFloat barWidth = MIN(QuotaBarWidth, availableBarWidth);
+    if (barWidth < QuotaMinBarWidth) {
+        barWidth = MAX(0.0, availableBarWidth);
     }
-    [percentText drawAtPoint:NSMakePoint(pctX, contentY) withAttributes:valueAttrs];
-    [resetText drawAtPoint:NSMakePoint(resetX, contentY) withAttributes:resetAttrs];
+
+    NSSize labelSize = [label sizeWithAttributes:labelAttrs];
+    NSSize resetSize = [resetText sizeWithAttributes:resetAttrs];
+    CGFloat labelY = rect.origin.y + floor((rect.size.height - labelSize.height) / 2.0);
+    CGFloat resetY = rect.origin.y + floor((rect.size.height - resetSize.height) / 2.0);
+
+    [label drawAtPoint:NSMakePoint(labelX, labelY) withAttributes:labelAttrs];
+    if (barWidth > 0.0) {
+        [self drawQuotaBarInRect:NSMakeRect(barX, rect.origin.y + floor((rect.size.height - QuotaBarHeight) / 2.0), barWidth, QuotaBarHeight)
+                          percent:percent
+                            color:barColor
+                             text:percentText
+                           dimmed:dimmed];
+    }
+    [resetText drawAtPoint:NSMakePoint(resetX, resetY) withAttributes:resetAttrs];
 }
 
 - (NSImage *)statusImageWithState:(NSDictionary *)state
@@ -405,9 +429,9 @@ static NSString *EnvironmentValue(NSString *key) {
 
     CGFloat height = MAX(NSStatusBar.systemStatusBar.thickness, 22.0);
     CGFloat approvalWidth = hasApprovals ? ceil([approvalText sizeWithAttributes:approvalAttrs].width) + 8.0 : 0.0;
-    CGFloat capsuleGap = 8.0;
-    CGFloat fiveWidth = 140.0;
-    CGFloat weekWidth = 154.0;
+    CGFloat capsuleGap = 5.0;
+    CGFloat fiveWidth = [self quotaCapsuleWidthForLabel:@"5h" resetText:fiveReset];
+    CGFloat weekWidth = [self quotaCapsuleWidthForLabel:@"Week" resetText:weekReset];
     CGFloat staleWidth = stale ? 10.0 : 0.0;
     CGFloat width = approvalWidth + fiveWidth + capsuleGap + weekWidth + staleWidth;
 

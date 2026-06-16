@@ -5,10 +5,10 @@ macOS menu-bar widget for checking Codex Pro `5h` and `Weekly` rate-limit remain
 It shows the same kind of data as Codex's **Rate limits remaining** panel in a compact native menu-bar view:
 
 ```text
-5h  [bar]  69%  03:05    Week  [bar]  95%  4/29
+5h  [ 69% ]  03:05    Week  [ 95% ]  4/29
 ```
 
-The bars represent remaining quota and shift from green toward orange/red as the quota gets low.
+The short quota bars show the percentage inside the bar and shift from green toward orange/red as the quota gets low.
 
 The menu dropdown also shows model-specific limits such as `GPT-5.3-Codex-Spark`.
 
@@ -18,7 +18,7 @@ The menu dropdown also shows model-specific limits such as `GPT-5.3-Codex-Spark`
 - Falls back to `https://chatgpt.com/backend-api/wham/usage` when App Server is unavailable.
 - Writes a normalized local state file.
 - Runs a native macOS menu-bar app that updates every 30 seconds.
-- Displays `5h` and `Week` in one line with continuous remaining-quota bars, compact reset time/date, and low-quota colors.
+- Displays `5h` and `Week` in one line with short remaining-quota bars, inside-bar percentage labels, compact reset time/date, and low-quota colors.
 - Watches Codex approval requests and lets you approve or deny them from the menu bar.
 - Installs LaunchAgents so the fetcher refreshes every 60 seconds and the menu-bar app starts on login.
 
@@ -80,7 +80,7 @@ The menu-bar app does not use App Server WebSocket transport. WebSocket is not n
 When a Codex thread is waiting on approval, the menu-bar item adds a compact approval marker before the quota display, for example:
 
 ```text
-审批 1  5h 69% 03:05  Week 95% 4/29
+审批 1  5h [69%] 03:05  Week [95%] 4/29
 ```
 
 The watcher first tries the local App Server proxy and falls back to a local stdio App Server process. When App Server can route approval requests to this watcher, the menu supports direct actions for:
@@ -195,7 +195,7 @@ python3 -m unittest discover -s tests
 Use this for GitHub:
 
 ```text
-macOS menu-bar widget for checking Codex Pro 5h and weekly rate-limit remaining percentages with compact native progress bars.
+macOS menu-bar widget for checking Codex Pro 5h and weekly rate-limit remaining percentages with compact in-bar quota indicators.
 ```
 
 Suggested topics:
