@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+import warnings
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +18,26 @@ def base_cfg() -> dict:
 
 
 class AppServerProviderTests(unittest.TestCase):
+    def test_app_server_command_prefers_chatgpt_bundle_when_path_lookup_fails(self) -> None:
+        bundled_codex = "/Applications/ChatGPT.app/Contents/Resources/codex"
+
+        with patch.object(fetch_quota.shutil, "which", return_value=None):
+            with patch.object(fetch_quota.Path, "exists", return_value=True):
+                command = fetch_quota._app_server_command({"app_server": {"command": "codex"}})
+
+        self.assertEqual(command, [bundled_codex, "app-server", "--listen", "stdio://"])
+
+    def test_utc_helpers_do_not_emit_deprecation_warnings(self) -> None:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            state = fetch_quota.resolve_manual_state(base_cfg(), {})
+            epoch = fetch_quota._epoch_to_datetime(0)
+
+        deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
+        self.assertEqual(deprecations, [])
+        self.assertEqual(state["source"]["provider"], "manual")
+        self.assertEqual(epoch.isoformat() if epoch else None, "1970-01-01T00:00:00")
+
     def test_rate_limits_by_limit_id_maps_main_and_additional_buckets(self) -> None:
         payload = {
             "rateLimits": {
@@ -118,6 +139,21 @@ class AppServerProviderTests(unittest.TestCase):
         self.assertEqual(state["source"]["provider"], "codex_wham")
         self.assertEqual(state["source"]["refreshed"]["fallback_from"], "app_server")
         self.assertIn("boom", state["source"]["refreshed"]["fallback_error"])
+
+    def test_app_server_failure_does_not_replace_a_previous_app_server_snapshot(self) -> None:
+        previous_state = {
+            "source": {"provider": "app_server"},
+            "rate_limits": [{"name": "Rate limits remaining"}],
+        }
+        fallback_state = {
+            "source": {"provider": "codex_wham", "refreshed": {}},
+            "rate_limits": [{"name": "Rate limits remaining"}],
+        }
+
+        with patch.object(fetch_quota, "resolve_app_server_state", side_effect=RuntimeError("temporary upstream failure")):
+            with patch.object(fetch_quota, "resolve_codex_state", return_value=fallback_state):
+                with self.assertRaisesRegex(RuntimeError, "temporary upstream failure"):
+                    fetch_quota.resolve_app_server_with_fallback(base_cfg(), previous_state)
 
 
 if __name__ == "__main__":

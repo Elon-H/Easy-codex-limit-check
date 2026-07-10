@@ -12,12 +12,23 @@ import ssl
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
 
 DEFAULT_STATE_PATH = "~/Library/Caches/com.easy-codex-limit-check/state.json"
+BUNDLED_CODEX_EXECUTABLES = (
+    Path("/Applications/ChatGPT.app/Contents/Resources/codex"),
+    Path("/Applications/Codex.app/Contents/Resources/codex"),
+)
+
+
+def utc_now() -> datetime:
+    """Return naive UTC to preserve the existing state-file date convention."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def to_iso8601(dt: datetime) -> str:
     return dt.replace(microsecond=0).isoformat() + "Z"
 
@@ -361,11 +372,13 @@ def _app_server_command(cfg: Dict[str, Any]) -> list[str]:
 
     if command[0] == "codex":
         resolved = shutil.which("codex")
-        bundled = "/Applications/Codex.app/Contents/Resources/codex"
         if resolved:
             command[0] = resolved
-        elif Path(bundled).exists():
-            command[0] = bundled
+        else:
+            for bundled in BUNDLED_CODEX_EXECUTABLES:
+                if bundled.exists():
+                    command[0] = str(bundled)
+                    break
 
     return command + ["app-server", "--listen", "stdio://"]
 
@@ -416,13 +429,13 @@ def fetch_app_server_rate_limits(cfg: Dict[str, Any]) -> Dict[str, Any]:
         _send_jsonl(proc, {"method": "initialized", "params": {}})
         _send_jsonl(proc, {"method": "account/rateLimits/read", "id": 1, "params": None})
 
-        deadline = datetime.utcnow() + timedelta(seconds=timeout)
-        while datetime.utcnow() < deadline:
+        deadline = utc_now() + timedelta(seconds=timeout)
+        while utc_now() < deadline:
             if proc.poll() is not None:
                 stderr = proc.stderr.read() if proc.stderr else ""
                 raise RuntimeError(f"Codex app-server exited early with code {proc.returncode}: {stderr.strip()}")
 
-            remaining = max((deadline - datetime.utcnow()).total_seconds(), 0.0)
+            remaining = max((deadline - utc_now()).total_seconds(), 0.0)
             ready, _, _ = select.select([proc.stdout], [], [], min(0.25, remaining))
             if not ready:
                 continue
@@ -541,7 +554,7 @@ def _epoch_to_datetime(value: Any) -> Optional[datetime]:
     if seconds is None:
         return None
     try:
-        return datetime.utcfromtimestamp(seconds)
+        return datetime.fromtimestamp(seconds, timezone.utc).replace(tzinfo=None)
     except Exception:
         return None
 
@@ -887,7 +900,7 @@ class QuotaSection:
 
 
 def resolve_manual_state(cfg: Dict[str, Any], prev_state: Dict[str, Any]) -> Dict[str, Any]:
-    now = datetime.utcnow()
+    now = utc_now()
     state: Dict[str, Any] = {
         "source": {
             "provider": "manual",
@@ -953,7 +966,7 @@ def resolve_manual_state(cfg: Dict[str, Any], prev_state: Dict[str, Any]) -> Dic
 
 
 def resolve_codex_state(cfg: Dict[str, Any], prev_state: Dict[str, Any]) -> Dict[str, Any]:
-    now = datetime.utcnow()
+    now = utc_now()
     five_start, five_end = compute_window(now, int(cfg.get("five_hour_window_hours", 5)))
     week_start, week_end = compute_week(now, int(cfg.get("week_start_weekday", 1)))
     payload = fetch_codex_usage(cfg)
@@ -1031,7 +1044,7 @@ def resolve_codex_state(cfg: Dict[str, Any], prev_state: Dict[str, Any]) -> Dict
 
 
 def resolve_app_server_state(cfg: Dict[str, Any], prev_state: Dict[str, Any]) -> Dict[str, Any]:
-    now = datetime.utcnow()
+    now = utc_now()
     five_start, five_end = compute_window(now, int(cfg.get("five_hour_window_hours", 5)))
     week_start, week_end = compute_week(now, int(cfg.get("week_start_weekday", 1)))
     payload = fetch_app_server_rate_limits(cfg)
@@ -1086,6 +1099,11 @@ def resolve_app_server_with_fallback(cfg: Dict[str, Any], prev_state: Dict[str, 
     try:
         return resolve_app_server_state(cfg, prev_state)
     except Exception as app_exc:
+        previous_source = prev_state.get("source") if isinstance(prev_state.get("source"), dict) else {}
+        if previous_source.get("provider") == "app_server":
+            # Preserve a known-good App Server snapshot instead of replacing it with legacy data.
+            raise
+
         app_cfg = cfg.get("app_server", {})
         fallback_enabled = True
         if isinstance(app_cfg, dict):
@@ -1124,7 +1142,7 @@ def resolve_state(cfg: Dict[str, Any], prev_state: Dict[str, Any]) -> Dict[str, 
 
     headers = build_openai_headers(cfg)
     subscription = fetch_openai_subscription(cfg, headers)
-    now = datetime.utcnow()
+    now = utc_now()
     five_start, five_end = compute_window(now, int(cfg.get("five_hour_window_hours", 5)))
     week_start, week_end = compute_week(now, int(cfg.get("week_start_weekday", 1)))
 
@@ -1132,7 +1150,7 @@ def resolve_state(cfg: Dict[str, Any], prev_state: Dict[str, Any]) -> Dict[str, 
     week_limit = float(format_limit(cfg, subscription, "week_limit_usd"))
 
     errors = []
-    now = datetime.utcnow()
+    now = utc_now()
     five_used = None
     week_used = None
     try:
@@ -1283,7 +1301,7 @@ def main() -> int:
             "credits": prev_state.get("credits"),
             "error": {
                 "message": str(exc),
-                "updated_at": to_iso8601(datetime.utcnow()),
+                "updated_at": to_iso8601(utc_now()),
             },
         }
         if prev_state.get("five_h") is None and prev_state.get("week") is None:

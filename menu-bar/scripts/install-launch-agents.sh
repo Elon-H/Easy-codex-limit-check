@@ -51,12 +51,39 @@ choose_python_bin() {
   return 1
 }
 
+choose_codex_bin_dir() {
+  local candidate resolved
+  for candidate in \
+    "/Applications/ChatGPT.app/Contents/Resources/codex" \
+    "/Applications/Codex.app/Contents/Resources/codex"; do
+    if [[ -x "$candidate" ]]; then
+      dirname "$candidate"
+      return 0
+    fi
+  done
+
+  resolved="$(command -v codex 2>/dev/null || true)"
+  if [[ -n "$resolved" && -x "$resolved" ]]; then
+    dirname "$resolved"
+    return 0
+  fi
+  return 1
+}
+
 PYTHON_BIN="${CODEX_QUOTA_PYTHON_BIN:-}"
 if [[ -z "$PYTHON_BIN" ]]; then
   if ! PYTHON_BIN="$(choose_python_bin)"; then
     echo "No usable python3 found. Set CODEX_QUOTA_PYTHON_BIN to a working Python 3 executable." >&2
     exit 1
   fi
+fi
+
+LAUNCH_PATH="$PATH"
+if CODEX_BIN_DIR="$(choose_codex_bin_dir)"; then
+  case ":$LAUNCH_PATH:" in
+    *":$CODEX_BIN_DIR:"*) ;;
+    *) LAUNCH_PATH="$CODEX_BIN_DIR:$LAUNCH_PATH" ;;
+  esac
 fi
 
 mkdir -p "$LAUNCHD_DIR"
@@ -255,7 +282,7 @@ sed -i '' "s#__APPROVAL_DECISIONS_PATH__#$APPROVAL_DECISIONS_PATH#g" "$MENU_PLIS
 sed -i '' "s#__PLUGIN_ROOT__#$PLUGIN_ROOT#g" "$MENU_PLIST"
 sed -i '' "s#__MENU_STDOUT__#$LOG_DIR/menu.stdout.log#g" "$MENU_PLIST"
 sed -i '' "s#__MENU_STDERR__#$LOG_DIR/menu.stderr.log#g" "$MENU_PLIST"
-sed -i '' "s#__PATH__#${PATH//\//\\/}#g" "$FETCH_PLIST" "$APPROVAL_PLIST" "$MENU_PLIST"
+sed -i '' "s#__PATH__#${LAUNCH_PATH//\//\\/}#g" "$FETCH_PLIST" "$APPROVAL_PLIST" "$MENU_PLIST"
 
 export CODEX_QUOTA_STATE_PATH="$STATE_PATH"
 export CODEX_QUOTA_PLUGIN_PATH="$PLUGIN_ROOT"

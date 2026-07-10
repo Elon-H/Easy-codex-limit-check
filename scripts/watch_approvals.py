@@ -26,6 +26,10 @@ MODERN_PERMISSIONS = "item/permissions/requestApproval"
 LEGACY_EXEC = "execCommandApproval"
 LEGACY_PATCH = "applyPatchApproval"
 ROLLOUT_PENDING_TOOL = "rollout/pendingToolApproval"
+BUNDLED_CODEX_EXECUTABLES = (
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
+    "/Applications/Codex.app/Contents/Resources/codex",
+)
 
 DEFAULT_THREAD_SOURCE_KINDS = [
     "cli",
@@ -122,11 +126,13 @@ def app_server_command(cfg: Dict[str, Any], transport: str = "stdio") -> list[st
 
     if command[0] == "codex":
         resolved = shutil.which("codex")
-        bundled = "/Applications/Codex.app/Contents/Resources/codex"
         if resolved:
             command[0] = resolved
-        elif os.path.exists(bundled):
-            command[0] = bundled
+        else:
+            for bundled in BUNDLED_CODEX_EXECUTABLES:
+                if os.path.exists(bundled):
+                    command[0] = bundled
+                    break
 
     if transport == "proxy":
         return command + ["app-server", "proxy"]

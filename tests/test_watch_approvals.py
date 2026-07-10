@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +17,15 @@ import watch_approvals  # noqa: E402
 
 
 class ApprovalNormalizationTests(unittest.TestCase):
+    def test_app_server_command_uses_chatgpt_bundle_when_path_lookup_fails(self) -> None:
+        bundled_codex = "/Applications/ChatGPT.app/Contents/Resources/codex"
+
+        with patch.object(watch_approvals.shutil, "which", return_value=None):
+            with patch.object(watch_approvals.os.path, "exists", side_effect=lambda path: path == bundled_codex):
+                command = watch_approvals.app_server_command({"app_server": {"command": "codex"}})
+
+        self.assertEqual(command, [bundled_codex, "app-server", "--listen", "stdio://"])
+
     def test_modern_command_approval_normalizes_display_fields(self) -> None:
         approval = watch_approvals.normalize_approval_request(
             watch_approvals.MODERN_COMMAND,

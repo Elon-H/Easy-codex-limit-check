@@ -73,6 +73,10 @@ remaining_percent = 100 - used_percent
 
 The legacy `codex_wham` provider still exists as a compatibility fallback for older Codex versions or App Server failures. That fallback uses `https://chatgpt.com/backend-api/wham/usage`.
 
+After a successful App Server refresh, a temporary App Server failure preserves that last known-good snapshot instead of replacing it with legacy fallback data. This prevents a transient backend problem from being displayed as an empty or zero weekly quota.
+
+On current macOS installations, the Codex executable can live inside `ChatGPT.app`. The fetcher and LaunchAgent installer prefer `/Applications/ChatGPT.app/Contents/Resources/codex`, then fall back to the legacy `/Applications/Codex.app/Contents/Resources/codex` location.
+
 The menu-bar app does not use App Server WebSocket transport. WebSocket is not needed for the local Mac widget and should not be exposed to a network without authentication.
 
 ## Approval Watcher
