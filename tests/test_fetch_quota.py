@@ -91,6 +91,57 @@ class AppServerProviderTests(unittest.TestCase):
         self.assertEqual(state["five_h"]["remaining"], 70.0)
         self.assertEqual(state["week"]["remaining"], 96.0)
 
+    def test_weekly_only_primary_window_maps_to_week_and_keeps_five_h_empty(self) -> None:
+        payload = {
+            "rateLimits": {
+                "limitId": "codex",
+                "primary": {"usedPercent": 1, "resetsAt": 1784517016, "windowDurationMins": 10080},
+                "secondary": None,
+            }
+        }
+
+        with patch.object(fetch_quota, "fetch_app_server_rate_limits", return_value=payload):
+            state = fetch_quota.resolve_app_server_state(base_cfg(), {})
+
+        group = state["rate_limits"][0]
+        self.assertIsNone(group["five_h"]["remaining_percent"])
+        self.assertIsNone(group["five_h"]["reset_at"])
+        self.assertEqual(group["week"]["remaining_percent"], 99.0)
+        self.assertEqual(group["week"]["window_seconds"], 604800)
+        self.assertIsNone(state["five_h"]["remaining"])
+        self.assertIsNone(state["five_h"]["reset_at"])
+        self.assertEqual(state["week"]["remaining"], 99.0)
+
+    def test_app_server_windows_are_classified_by_duration_not_position(self) -> None:
+        payload = {
+            "rateLimits": {
+                "limitId": "codex",
+                "primary": {"usedPercent": 4, "resetsAt": 1770500000, "windowDurationMins": 10080},
+                "secondary": {"usedPercent": 30, "resetsAt": 1770000000, "windowDurationMins": 300},
+            }
+        }
+
+        with patch.object(fetch_quota, "fetch_app_server_rate_limits", return_value=payload):
+            state = fetch_quota.resolve_app_server_state(base_cfg(), {})
+
+        self.assertEqual(state["five_h"]["remaining"], 70.0)
+        self.assertEqual(state["week"]["remaining"], 96.0)
+
+    def test_app_server_without_window_durations_preserves_legacy_positions(self) -> None:
+        payload = {
+            "rateLimits": {
+                "limitId": "codex",
+                "primary": {"usedPercent": 20, "resetsAt": 1770000000},
+                "secondary": {"usedPercent": 8, "resetsAt": 1770500000},
+            }
+        }
+
+        with patch.object(fetch_quota, "fetch_app_server_rate_limits", return_value=payload):
+            state = fetch_quota.resolve_app_server_state(base_cfg(), {})
+
+        self.assertEqual(state["five_h"]["remaining"], 80.0)
+        self.assertEqual(state["week"]["remaining"], 92.0)
+
     def test_app_server_one_percent_is_not_scaled_to_one_hundred(self) -> None:
         payload = {
             "rateLimits": {

@@ -71,6 +71,8 @@ The response returns used percentages. This project converts them to remaining p
 remaining_percent = 100 - used_percent
 ```
 
+App Server window positions are not treated as fixed `5h`/`Week` slots. The fetcher classifies each window by `windowDurationMins`: the configured 5-hour duration maps to `5h`, and the configured 7-day duration maps to `Week`. If Codex temporarily omits one window, that menu-bar slot remains visible with an unavailable value instead of displaying another window's quota in the wrong place. Responses from older App Server versions that omit all duration metadata retain the legacy primary/secondary mapping.
+
 The legacy `codex_wham` provider still exists as a compatibility fallback for older Codex versions or App Server failures. That fallback uses `https://chatgpt.com/backend-api/wham/usage`.
 
 After a successful App Server refresh, a temporary App Server failure preserves that last known-good snapshot instead of replacing it with legacy fallback data. This prevents a transient backend problem from being displayed as an empty or zero weekly quota.

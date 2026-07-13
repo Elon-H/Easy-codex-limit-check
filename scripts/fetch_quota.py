@@ -608,7 +608,15 @@ def _rate_limit_group_from_codex(
 
 def _rate_limit_window_from_app_server(window: Any, fallback_reset_at: datetime, now: datetime, label: str) -> Dict[str, Any]:
     if not isinstance(window, dict):
-        window = {}
+        return {
+            "label": label,
+            "used_percent": None,
+            "remaining_percent": None,
+            "reset_at": None,
+            "reset_after_seconds": None,
+            "window_seconds": None,
+            "updated_at": to_iso8601(now),
+        }
     # Codex App Server reports usedPercent as percentage points, e.g. 1 means 1%.
     used_percent = _clamp_percent_points(safe_float(window.get("usedPercent")))
     remaining_percent = None if used_percent is None else _percent_display_value(100 - used_percent)
@@ -627,22 +635,63 @@ def _rate_limit_window_from_app_server(window: Any, fallback_reset_at: datetime,
     }
 
 
+def _app_server_window_slots(
+    rate_limit: Dict[str, Any],
+    five_window_minutes: int,
+    week_window_minutes: int,
+) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    primary = rate_limit.get("primary") if isinstance(rate_limit.get("primary"), dict) else None
+    secondary = rate_limit.get("secondary") if isinstance(rate_limit.get("secondary"), dict) else None
+    candidates = [window for window in (primary, secondary) if window is not None]
+    durations = [safe_float(window.get("windowDurationMins")) for window in candidates]
+
+    # Older app-server responses may omit durations. Preserve their positional
+    # primary/secondary meaning only when no duration metadata is available.
+    if candidates and all(duration is None for duration in durations):
+        return primary, secondary
+
+    five_h = next(
+        (
+            window
+            for window, duration in zip(candidates, durations)
+            if duration is not None and duration == five_window_minutes
+        ),
+        None,
+    )
+    week = next(
+        (
+            window
+            for window, duration in zip(candidates, durations)
+            if duration is not None and duration == week_window_minutes
+        ),
+        None,
+    )
+    return five_h, week
+
+
 def _rate_limit_group_from_app_server(
     name: str,
     payload: Any,
     now: datetime,
     five_end: datetime,
     week_end: datetime,
+    five_window_minutes: int,
+    week_window_minutes: int,
 ) -> Dict[str, Any]:
     rate_limit = payload if isinstance(payload, dict) else {}
     limit_reached = rate_limit.get("rateLimitReachedType") is not None
+    five_h_window, week_window = _app_server_window_slots(
+        rate_limit,
+        five_window_minutes,
+        week_window_minutes,
+    )
     return {
         "name": name,
         "metered_feature": rate_limit.get("limitId") if isinstance(rate_limit.get("limitId"), str) else None,
         "allowed": not limit_reached,
         "limit_reached": limit_reached,
-        "five_h": _rate_limit_window_from_app_server(rate_limit.get("primary"), five_end, now, "5h"),
-        "week": _rate_limit_window_from_app_server(rate_limit.get("secondary"), week_end, now, "Weekly"),
+        "five_h": _rate_limit_window_from_app_server(five_h_window, five_end, now, "5h"),
+        "week": _rate_limit_window_from_app_server(week_window, week_end, now, "Weekly"),
         "updated_at": to_iso8601(now),
     }
 
@@ -653,7 +702,14 @@ def _rate_limit_group_is_usable(group: Dict[str, Any]) -> bool:
     return five.get("used_percent") is not None or week.get("used_percent") is not None
 
 
-def _app_server_rate_limit_groups(payload: Dict[str, Any], now: datetime, five_end: datetime, week_end: datetime) -> list[Dict[str, Any]]:
+def _app_server_rate_limit_groups(
+    payload: Dict[str, Any],
+    now: datetime,
+    five_end: datetime,
+    week_end: datetime,
+    five_window_minutes: int,
+    week_window_minutes: int,
+) -> list[Dict[str, Any]]:
     single = payload.get("rateLimits") if isinstance(payload.get("rateLimits"), dict) else None
     by_id = payload.get("rateLimitsByLimitId") if isinstance(payload.get("rateLimitsByLimitId"), dict) else None
 
@@ -679,7 +735,17 @@ def _app_server_rate_limit_groups(payload: Dict[str, Any], now: datetime, five_e
         primary = single
 
     if isinstance(primary, dict):
-        groups.append(_rate_limit_group_from_app_server("Rate limits remaining", primary, now, five_end, week_end))
+        groups.append(
+            _rate_limit_group_from_app_server(
+                "Rate limits remaining",
+                primary,
+                now,
+                five_end,
+                week_end,
+                five_window_minutes,
+                week_window_minutes,
+            )
+        )
 
     if by_id:
         for key, value in by_id.items():
@@ -688,7 +754,17 @@ def _app_server_rate_limit_groups(payload: Dict[str, Any], now: datetime, five_e
             if single and primary_key is None and value.get("limitId") == single.get("limitId"):
                 continue
             name = value.get("limitName") if isinstance(value.get("limitName"), str) and value.get("limitName") else str(key)
-            groups.append(_rate_limit_group_from_app_server(name, value, now, five_end, week_end))
+            groups.append(
+                _rate_limit_group_from_app_server(
+                    name,
+                    value,
+                    now,
+                    five_end,
+                    week_end,
+                    five_window_minutes,
+                    week_window_minutes,
+                )
+            )
 
     groups = [group for group in groups if _rate_limit_group_is_usable(group)]
     if not groups:
@@ -1045,10 +1121,19 @@ def resolve_codex_state(cfg: Dict[str, Any], prev_state: Dict[str, Any]) -> Dict
 
 def resolve_app_server_state(cfg: Dict[str, Any], prev_state: Dict[str, Any]) -> Dict[str, Any]:
     now = utc_now()
-    five_start, five_end = compute_window(now, int(cfg.get("five_hour_window_hours", 5)))
+    five_window_hours = int(cfg.get("five_hour_window_hours", 5))
+    week_window_days = int(cfg.get("week_window_days", 7))
+    five_start, five_end = compute_window(now, five_window_hours)
     week_start, week_end = compute_week(now, int(cfg.get("week_start_weekday", 1)))
     payload = fetch_app_server_rate_limits(cfg)
-    groups = _app_server_rate_limit_groups(payload, now, five_end, week_end)
+    groups = _app_server_rate_limit_groups(
+        payload,
+        now,
+        five_end,
+        week_end,
+        five_window_hours * 60,
+        week_window_days * 24 * 60,
+    )
     main_group = groups[0]
 
     five_limit = 100.0
@@ -1059,6 +1144,12 @@ def resolve_app_server_state(cfg: Dict[str, Any], prev_state: Dict[str, Any]) ->
     week_used = None if week_remaining is None else 100 - week_remaining
     five = QuotaSection(five_limit, five_used, parse_iso8601(main_group["five_h"].get("reset_at")) or five_end, now, "five_h", "%")
     week = QuotaSection(week_limit, week_used, parse_iso8601(main_group["week"].get("reset_at")) or week_end, now, "week", "%")
+    five_state = five.dict()
+    week_state = week.dict()
+    if main_group["five_h"].get("reset_at") is None:
+        five_state["reset_at"] = None
+    if main_group["week"].get("reset_at") is None:
+        week_state["reset_at"] = None
 
     plan_type = None
     raw_main = payload.get("rateLimits") if isinstance(payload.get("rateLimits"), dict) else None
@@ -1084,8 +1175,8 @@ def resolve_app_server_state(cfg: Dict[str, Any], prev_state: Dict[str, Any]) ->
         },
         "window_version": 2,
         "state_file_ttl_seconds": int(cfg.get("state_file_ttl_seconds", 180)),
-        "five_h": five.dict(),
-        "week": week.dict(),
+        "five_h": five_state,
+        "week": week_state,
         "rate_limits": groups,
     }
 
